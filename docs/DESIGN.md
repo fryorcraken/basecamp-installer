@@ -1,7 +1,7 @@
 # Design
 
-Status: decided in conversation, not implemented. Sizes are unmeasured; the
-single-file form (below) is conditional on them. Anything stated here as a
+Status: decided in conversation, not implemented. Portable and compressed
+sizes are unmeasured; the single-file form (below) is conditional on them. Anything stated here as a
 fact about another repository was read from source in October 2026 and can be
 re-checked there; this document records what was non-obvious, not what a
 command can answer.
@@ -92,8 +92,10 @@ The artifact is a single file that can be shared by USB, on forums, etc.
 Tracked as GitHub Issues; this is the summary.
 
 - **Size.** Single-file viability depends on the size of the storage fetcher
-  per platform. Unmeasured; a Nix build of `libstorage` and the CLI for Linux
-  x86_64 is the baseline.
+  per platform. First measurement (dynamic Nix build, Linux x86_64, not
+  portable, not compressed): `libstorage.so` 23.3 MB, `storage` CLI 29.2 MB,
+  about 25% larger and so borderline against the 20-30% rule. The portable and
+  compressed numbers decide it.
 - **Fleet dependence.** Bootstrap, AutoNAT and relay all rely on the central
   fleet. Behaviour with the fleet unreachable is untested.
 - **Seeder retention.** At least one node must stay up with a large
