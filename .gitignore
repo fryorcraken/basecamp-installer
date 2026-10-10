@@ -1,3 +1,9 @@
 tmp/
 result
 result-*
+
+# specflow
+.claude/*
+!.claude/settings.json
+!.claude/specflow/
+!.claude/agents/

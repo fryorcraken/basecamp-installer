@@ -26,6 +26,11 @@ The artifact is a single file that can be shared by USB, on forums, etc.
   chain is available to anyone who wants it. A signature inside the file
   proves nothing on its own: an attacker can replace the file and the key
   together. The fingerprint's independent publication is the trust anchor.
+  **What is verified, by whom:** the file as a whole is signed, and the user
+  checks that signature (a script cannot vouch for itself). Inside it, each
+  payload is verified at run time by its hardcoded sha256 and CID. There is no
+  per-payload signature; payload integrity rests on the hashes sealed inside
+  the signed file. The GitHub fallback verifies the same hardcoded sha256.
 - **Platforms.** Whatever a Basecamp release supports; today Linux x86_64 and
   aarch64, and macOS arm64. macOS uses the notarized DMG.
 - **Form.** One shell-headed file with an embedded storage fetcher per
