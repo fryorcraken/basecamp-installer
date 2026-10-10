@@ -2,6 +2,14 @@
   "worktree": {
     "baseRef": "head"
   },
+  "extraKnownMarketplaces": {
+    "agent-spec-flow": {
+      "source": {
+        "source": "github",
+        "repo": "fryorcraken/agent-spec-flow"
+      }
+    }
+  },
   "enabledPlugins": {
     "specflow@agent-spec-flow": true
   },
