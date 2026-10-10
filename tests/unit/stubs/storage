@@ -49,7 +49,9 @@ fi
 if [ -f "$state/ignore-term-$role" ]; then
 	: >"$state/listening-$role"
 	trap '' TERM
-	exec "${STUB_REAL_SLEEP:-sleep}" 60
+	# Far longer than any bound the check has, so that a check which waits for
+	# this node to give up on its own is seen taking that long.
+	exec "${STUB_REAL_SLEEP:-sleep}" 90
 fi
 
 trap 'rm -f "$state/listening-$role"; kill "$sleeper" 2>/dev/null; exit 0' TERM

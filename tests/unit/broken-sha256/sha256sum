@@ -14,7 +14,12 @@ calls=0
 calls=$((calls + 1))
 printf '%s\n' "$calls" >"$state/sha-calls"
 
-if [ "$calls" -ge 2 ]; then
+first_broken_call=2
+# With the knob file $STUB_STATE/sha-broken-from-first the very first call, on
+# the test content, is broken too: two broken calls give two equal "digests".
+[ -f "$state/sha-broken-from-first" ] && first_broken_call=1
+
+if [ "$calls" -ge "$first_broken_call" ]; then
 	[ -f "$state/sha-prints-nothing" ] && exit 0
 	exit 1
 fi

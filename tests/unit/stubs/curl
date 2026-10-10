@@ -9,10 +9,15 @@
 # Every request is logged to $STUB_STATE/requests as one line:
 #   METHOD URL [header] [header]...
 # and every upload to $STUB_STATE/uploads as: ROLE CID FILENAME BLOCKSIZE MIMETYPE
+# Every call is also logged to $STUB_STATE/curl-calls as:
+#   URL first=<first argument> noproxy=<--noproxy value> max-time=<--max-time value>
+# so a test can see what the check passed without this stub honouring it.
 #
 # Knobs, as files under $STUB_STATE (ROLE is publisher, fetcher or reproducer):
 #   foreign-everywhere      a server that is not a node answers 200 on every
 #                           port no stub node listens on
+#   foreign-after-publisher the same, but only once the publisher listens, so
+#                           the publisher's own start is not refused
 #   upload-status-ROLE      holds the HTTP status an upload is refused with
 #   upload-empty-ROLE       an upload answers 200 with an empty body
 #   cid-salt-ROLE           this node's CIDs differ from every other node's
@@ -34,13 +39,24 @@ url=
 header_log=
 content_type=
 content_disposition=
+first_argument=${1-}
+noproxy=
+max_time=
 while [ $# -gt 0 ]; do
 	case $1 in
 	--output)
 		out=$2
 		shift 2
 		;;
-	--max-time | --noproxy | --write-out) shift 2 ;;
+	--noproxy)
+		noproxy=$2
+		shift 2
+		;;
+	--max-time)
+		max_time=$2
+		shift 2
+		;;
+	--write-out) shift 2 ;;
 	--header)
 		header_log="$header_log [$2]"
 		case $2 in
@@ -64,6 +80,7 @@ done
 method=GET
 [ -n "$upload_file" ] && method=POST
 printf '%s %s%s\n' "$method" "$url" "$header_log" >>"$state/requests"
+printf '%s first=%s noproxy=%s max-time=%s\n' "$url" "$first_argument" "$noproxy" "$max_time" >>"$state/curl-calls"
 
 # reply STATUS [EXIT]: what --write-out '%{http_code}' prints, then curl's exit.
 reply() {
@@ -88,6 +105,12 @@ role=
 [ -f "$state/role-$port" ] && role=$(cat "$state/role-$port")
 if [ -z "$role" ] || [ ! -f "$state/listening-$role" ]; then
 	if [ -f "$state/foreign-everywhere" ]; then
+		echo "not a storage node" >"$out"
+		reply 200
+	fi
+	# A server on a port no node has been given yet, from the moment the
+	# publisher listens: the next node's port, probed before that node starts.
+	if [ -f "$state/foreign-after-publisher" ] && [ -f "$state/listening-publisher" ]; then
 		echo "not a storage node" >"$out"
 		reply 200
 	fi

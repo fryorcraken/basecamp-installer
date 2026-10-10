@@ -11,6 +11,15 @@ run_check
 assert_failed_at usage
 assert_contains "$work/stderr" "a storage CLI is required"
 assert_line_count "$state/invocations" 0
+assert_no_scratch_made
+end
+
+begin "an empty storage CLI is refused as none named"
+run_check ''
+assert_failed_at usage
+assert_contains "$work/stderr" "a storage CLI is required"
+assert_line_count "$state/invocations" 0
+assert_no_scratch_made
 end
 
 begin "named path does not exist"
@@ -18,6 +27,7 @@ run_check "$work/no-such-cli"
 assert_failed_at "storage CLI"
 assert_contains "$work/stderr" "$work/no-such-cli"
 assert_line_count "$state/invocations" 0
+assert_no_scratch_made
 end
 
 begin "named path is not executable"
@@ -27,6 +37,16 @@ run_check "$work/plain-file"
 assert_failed_at "storage CLI"
 assert_contains "$work/stderr" "$work/plain-file"
 assert_line_count "$state/invocations" 0
+assert_no_scratch_made
+end
+
+# An executable directory is a path the shell can run nothing from.
+begin "named path is a directory"
+run_check "$work/state"
+assert_failed_at "storage CLI"
+assert_contains "$work/stderr" "$work/state"
+assert_line_count "$state/invocations" 0
+assert_no_scratch_made
 end
 
 # The check must not search for a CLI: a bare name that is not a file here is
@@ -35,6 +55,7 @@ begin "a bare name is not looked up on PATH"
 run_check storage
 assert_failed_at "storage CLI"
 assert_line_count "$state/invocations" 0
+assert_no_scratch_made
 end
 
 # The other half: a bare name that is a file here runs that file, not the
@@ -54,16 +75,100 @@ end
 # --- The check is a POSIX sh program -----------------------------------------
 
 begin "no sha256 tool is available"
-toolbox=$work/toolbox
-mkdir "$toolbox"
-for tool in "${shell_under_test%% *}" awk sed cmp wc mktemp cat mkdir sleep; do
-	ln -s "$(command -v "$tool")" "$toolbox/$tool"
-done
-ln -s "$stubs/curl" "$toolbox/curl"
-check_path=$toolbox
+make_toolbox "$work/toolbox"
+rm "$work/toolbox/sha256sum"
+check_path=$work/toolbox
 run_check "$stub_cli"
 assert_failed_at tools
 assert_contains "$work/stderr" "sha256"
+assert_line_count "$state/invocations" 0
+assert_no_scratch_made
+end
+
+# The stand-in shasum accepts only the invocation shasum documents for SHA-256,
+# `shasum -a 256` reading standard input, and passes it to the real digest tool.
+begin "only shasum is available"
+make_toolbox "$work/toolbox"
+rm "$work/toolbox/sha256sum"
+printf '%s\n' '#!/bin/sh' \
+	'[ "$#" -eq 2 ] && [ "$1" = -a ] && [ "$2" = 256 ] ||' \
+	'	{ echo "shasum: unexpected arguments: $*" >&2; exit 2; }' \
+	': >"$STUB_STATE/shasum-ran"' \
+	"exec $real_sha256" >"$work/toolbox/shasum"
+chmod +x "$work/toolbox/shasum"
+check_path=$work/toolbox
+run_check "$stub_cli"
+assert_status_zero
+[ -f "$state/shasum-ran" ] || flunk "the check did not use shasum"
+assert_result_lines
+end
+
+begin "curl is not available"
+make_toolbox "$work/toolbox"
+rm "$work/toolbox/curl"
+check_path=$work/toolbox
+run_check "$stub_cli"
+assert_failed_at tools
+assert_contains "$work/stderr" "curl"
+assert_line_count "$state/invocations" 0
+assert_no_scratch_made
+end
+
+begin "mktemp is not available"
+make_toolbox "$work/toolbox"
+rm "$work/toolbox/mktemp"
+check_path=$work/toolbox
+run_check "$stub_cli"
+assert_failed_at tools
+assert_contains "$work/stderr" "mktemp"
+assert_line_count "$state/invocations" 0
+assert_no_scratch_made
+end
+
+# --- The command line is one operand and one option --------------------------
+
+begin "unknown option"
+run_check --bogus "$stub_cli"
+assert_failed_at usage
+assert_contains "$work/stderr" "--bogus"
+assert_line_count "$state/invocations" 0
+assert_no_scratch_made
+end
+
+# run_check states --scratch-parent first, so the option the test adds is last.
+begin "option without its value"
+run_check --scratch-parent
+assert_failed_at usage
+assert_contains "$work/stderr" "--scratch-parent needs a directory"
+assert_line_count "$state/invocations" 0
+assert_no_scratch_made
+end
+
+begin "more than one operand"
+run_check "$stub_cli" "$stub_cli"
+assert_failed_at usage
+assert_line_count "$state/invocations" 0
+assert_no_scratch_made
+end
+
+# The file is named -cli and sits in the current directory, so it is a bare name
+# that begins with a hyphen: only the terminator can make it an operand.
+begin "an operand after the option terminator is the storage CLI"
+cp "$stub_cli" "$work/-cli"
+cd "$work" || exit 2
+run_check -- -cli
+cd "$repo" || exit 2
+assert_status_zero
+assert_line_count "$state/invocations" 3
+end
+
+begin "a hyphen-led operand without the terminator is an unknown option"
+cp "$stub_cli" "$work/-cli"
+cd "$work" || exit 2
+run_check -cli
+cd "$repo" || exit 2
+assert_failed_at usage
+assert_contains "$work/stderr" "-cli"
 assert_line_count "$state/invocations" 0
 end
 
@@ -72,15 +177,7 @@ end
 begin "full pass prints the five result lines and nothing else"
 run_check "$stub_cli"
 assert_status_zero
-recorded_cid=$(sed -n '1s/^publisher \([^ ]*\) .*/\1/p' "$state/uploads")
-# Derived here from the file the check wrote, not from what the check printed.
-expected_sha256=$($real_sha256 <"$scratch/poc-payload.bin")
-expected_sha256=${expected_sha256%% *}
-printf 'cid=%s\nfilename=poc-payload.bin\nblock_size=131072\nmimetype=application/octet-stream\nsha256=%s\n' \
-	"$recorded_cid" "$expected_sha256" >"$work/expected-stdout"
-[ -n "$recorded_cid" ] || flunk "the stub publisher recorded no upload"
-cmp -s "$work/expected-stdout" "$work/stdout" ||
-	flunk "stdout is: $(cat "$work/stdout"); expected: $(cat "$work/expected-stdout")"
+assert_result_lines
 end
 
 begin "nodes are confined to localhost"
@@ -137,6 +234,65 @@ assert_lacks "$state/invocations" "--disc-port"
 assert_lacks "$state/invocations" "--metrics"
 end
 
+# Scenario "The ports of a run are the check's own": the same two ports for
+# each node on a second run. The stub's state is cleared between the runs so
+# that it assigns the roles again; the scratch parent is not.
+begin "the ports do not vary between runs"
+run_check "$stub_cli"
+assert_status_zero
+tr ' ' '\n' <"$state/invocations" |
+	sed -n -e 's/^--api-port=/api /p' -e 's/^--listen-port=/listen /p' >"$work/first-run-ports"
+assert_line_count "$work/first-run-ports" 6
+rm -rf "$state"
+mkdir "$state"
+run_check "$stub_cli"
+assert_status_zero
+tr ' ' '\n' <"$state/invocations" |
+	sed -n -e 's/^--api-port=/api /p' -e 's/^--listen-port=/listen /p' >"$work/second-run-ports"
+cmp -s "$work/first-run-ports" "$work/second-run-ports" ||
+	flunk "the ports differ: $(cat "$work/first-run-ports") then $(cat "$work/second-run-ports")"
+end
+
+# Scenario "Request target": every request is to a REST port that this run gave
+# a node. The ports are read from the invocations the stub recorded.
+begin "requests are addressed to the REST ports of this run"
+run_check "$stub_cli"
+assert_status_zero
+tr ' ' '\n' <"$state/invocations" | sed -n 's/^--api-port=//p' >"$work/api-ports"
+assert_line_count "$work/api-ports" 3
+sed -n 's|^[A-Z]* http://127\.0\.0\.1:\([0-9]*\)/.*|\1|p' "$state/requests" >"$work/request-ports"
+request_count=$(grep -c '' "$state/requests")
+assert_line_count "$work/request-ports" "$request_count"
+while read -r port; do
+	grep -x -F -- "$port" "$work/api-ports" >/dev/null ||
+		flunk "a request went to port $port, which is no node's REST port: $(cat "$work/api-ports")"
+done <"$work/request-ports"
+end
+
+# Scenario "User configuration and proxies are bypassed". The stub does not
+# honour the arguments, it records them; the expected line is hardcoded here.
+begin "every request is made with -q first and --noproxy given *"
+run_check "$stub_cli"
+assert_status_zero
+request_count=$(grep -c '' "$state/requests")
+assert_line_count "$state/curl-calls" "$request_count"
+grep -v ' first=-q noproxy=\* ' "$state/curl-calls" >"$work/unbypassed-calls"
+assert_line_count "$work/unbypassed-calls" 0
+end
+
+# Not in a scenario: Failure stops the run, and "Publisher is gone" asks for a
+# bounded wait. The stub cannot time out, so the test sees that the fetch, and
+# every other request, carried a positive --max-time.
+begin "every request carries a time limit"
+run_check "$stub_cli"
+assert_status_zero
+request_count=$(grep -c '' "$state/requests")
+grep -E ' max-time=[1-9][0-9]*$' "$state/curl-calls" >"$work/limited-calls"
+assert_line_count "$work/limited-calls" "$request_count"
+grep -F '/network/stream' "$work/limited-calls" >"$work/limited-fetch"
+assert_line_count "$work/limited-fetch" 1
+end
+
 begin "uploads carry the pinned values"
 run_check "$stub_cli"
 assert_status_zero
@@ -186,6 +342,11 @@ assert_contains "$state/fetched-by" "fetcher"
 assert_lacks "$state/fetched-by" "reproducer"
 grep '^reproducer .* poc-payload.bin 131072 ' "$state/uploads" >"$work/pinned-reuploads"
 assert_line_count "$work/pinned-reuploads" 1
+# No download request of any kind went to the reproducer's REST port.
+reproducer_port=$(sed -n 3p "$state/invocations" | tr ' ' '\n' | sed -n 's/^--api-port=//p')
+grep -F "127.0.0.1:$reproducer_port/" "$state/requests" >"$work/reproducer-requests"
+[ -s "$work/reproducer-requests" ] || flunk "the reproducer was sent no request"
+assert_lacks "$work/reproducer-requests" "/network/"
 end
 
 # --- Nodes start within a bounded wait ---------------------------------------
@@ -224,6 +385,24 @@ assert_line_count "$state/invocations" 0
 # The port the check asked about, as the stub curl logged it.
 probed_port=$(sed -n '1s|^GET http://127\.0\.0\.1:\([0-9]*\)/.*|\1|p' "$state/requests")
 [ -n "$probed_port" ] || flunk "the check made no request before starting the publisher"
+assert_contains "$work/stderr" "127.0.0.1:$probed_port"
+end
+
+# Scenario "Foreign server on a later node's REST port": nothing answers on the
+# publisher's port, so the publisher starts; the fetcher's port is then taken.
+begin "a foreign server on the fetcher's REST port is refused"
+knob foreign-after-publisher
+run_check "$stub_cli"
+assert_failed_at "fetcher start"
+assert_contains "$work/stderr" "already answers"
+assert_contains "$work/stderr" "fetcher"
+# Only the publisher was started.
+assert_line_count "$state/invocations" 1
+publisher_port=$(sed -n 1p "$state/invocations" | tr ' ' '\n' | sed -n 's/^--api-port=//p')
+# The port the check asked about last, as the stub curl logged it.
+probed_port=$(sed -n '$s|^GET http://127\.0\.0\.1:\([0-9]*\)/.*|\1|p' "$state/requests")
+[ -n "$probed_port" ] || flunk "the last request was not a probe of a port"
+[ "$probed_port" != "$publisher_port" ] || flunk "the refused port is the publisher's"
 assert_contains "$work/stderr" "127.0.0.1:$probed_port"
 end
 
@@ -361,6 +540,25 @@ run_check "$stub_cli"
 assert_failed_at verification
 end
 
+# Both calls broken: a check that took "no digest" for a digest would find the
+# two equal and pass. The check must fail before it ever uploads.
+begin "sha256 tool fails on the test content"
+knob sha-broken-from-first
+check_path=$tests_dir/unit/broken-sha256:$stubs:$PATH
+run_check "$stub_cli"
+assert_failed_at "test content"
+assert_line_count "$state/invocations" 0
+end
+
+begin "sha256 tool prints nothing for the test content"
+knob sha-broken-from-first
+knob sha-prints-nothing
+check_path=$tests_dir/unit/broken-sha256:$stubs:$PATH
+run_check "$stub_cli"
+assert_failed_at "test content"
+assert_line_count "$state/invocations" 0
+end
+
 # --- The CID reproduces, and changes with a pinned value ---------------------
 
 begin "CID does not reproduce"
@@ -412,32 +610,59 @@ end
 # --- No node outlives the run; files stay in one scratch directory -----------
 # Every test above ends with assert_no_node_left, after success and failure.
 
+# The stub node sleeps 90 seconds through SIGTERM. A check that waits for it to
+# give up takes that long and leaves it gone all the same, so the exit time is
+# what shows the node was killed rather than waited for.
 begin "a node that ignores SIGTERM is still stopped"
 knob ignore-term-publisher
 knob upload-status-publisher 500
+started_at=$(date +%s)
 run_check "$stub_cli"
+elapsed=$(($(date +%s) - started_at))
 assert_failed_at upload
+[ "$elapsed" -lt 45 ] || flunk "the check took $elapsed seconds to exit; the node ignores SIGTERM for 90"
 end
+
+# interrupt_check SIGNAL: starts the check against a node that never becomes
+# ready, sends it SIGNAL once the node is running, and sets status. The check is
+# started under env --default-signal because a shell started in the background
+# of a script ignores SIGINT and then cannot trap it.
+interrupt_check() {
+	reset_signals=
+	env --default-signal=INT true 2>/dev/null && reset_signals="env --default-signal=INT"
+	# shellcheck disable=SC2086
+	PATH=$check_path STUB_STATE=$state STUB_REAL_SLEEP=$real_sleep \
+		$reset_signals $shell_under_test "$check" --scratch-parent "$work/scratch" "$stub_cli" \
+		>"$work/stdout" 2>"$work/stderr" &
+	check_pid=$!
+	waited=0
+	while [ ! -f "$state/pids" ] && [ "$waited" -lt 20 ]; do
+		sleep 1
+		waited=$((waited + 1))
+	done
+	[ -f "$state/pids" ] || flunk "the check started no node within 20 seconds"
+	kill -s "$1" "$check_pid"
+	wait "$check_pid"
+	status=$?
+}
 
 begin "SIGTERM stops the running node and exits non-zero"
 knob deaf-publisher
-# shellcheck disable=SC2086
-PATH=$check_path STUB_STATE=$state STUB_REAL_SLEEP=$real_sleep \
-	$shell_under_test "$check" --scratch-parent "$work/scratch" "$stub_cli" \
-	>"$work/stdout" 2>"$work/stderr" &
-check_pid=$!
-waited=0
-while [ ! -f "$state/pids" ] && [ "$waited" -lt 20 ]; do
-	sleep 1
-	waited=$((waited + 1))
-done
-[ -f "$state/pids" ] || flunk "the check started no node within 20 seconds"
-kill -TERM "$check_pid"
-wait "$check_pid"
-status=$?
+interrupt_check TERM
 assert_status_nonzero
 assert_lacks "$work/stdout" "cid="
 end
+
+if env --default-signal=INT true 2>/dev/null; then
+	begin "SIGINT stops the running node and exits non-zero"
+	knob deaf-publisher
+	interrupt_check INT
+	assert_status_nonzero
+	assert_lacks "$work/stdout" "cid="
+	end
+else
+	printf 'skip SIGINT stops the running node and exits non-zero: env has no --default-signal\n'
+fi
 
 begin "logs survive a failure, and every file is under the scratch directory"
 knob upload-status-publisher 500
@@ -462,6 +687,54 @@ assert_status_zero
 for node in publisher fetcher reproducer; do
 	assert_contains "$scratch/$node/node.log" "stub storage node: $node"
 done
+end
+
+# Scenario "Run leaves the tree untouched", for a pass: run from an empty
+# directory, which is still empty, and the scratch parent gained one entry.
+begin "a pass writes nothing outside the scratch directory"
+mkdir "$work/cwd"
+cd "$work/cwd" || exit 2
+run_check "$stub_cli"
+cd "$repo" || exit 2
+assert_status_zero
+ls -A "$work/cwd" >"$work/cwd-entries"
+assert_line_count "$work/cwd-entries" 0
+ls -A "$work/scratch" >"$work/scratch-entries"
+assert_line_count "$work/scratch-entries" 1
+end
+
+# Scenario "Scratch directory is private". The mode is read with ls, whose
+# first field is the expected ten characters, plus a marker some systems add.
+begin "the scratch directory grants nothing to group or others"
+run_check "$stub_cli"
+assert_status_zero
+mode=$(ls -ld -- "$scratch")
+mode=${mode%% *}
+case $mode in
+drwx------ | drwx------. | drwx------+) ;;
+*) flunk "the scratch directory's mode is $mode, expected drwx------" ;;
+esac
+end
+
+# Scenario "Each run has its own scratch directory". The state is cleared
+# between the runs so that the stub assigns its roles again.
+begin "two runs with one scratch parent have two scratch directories"
+run_check "$stub_cli"
+assert_status_zero
+first_scratch=$scratch
+cksum "$first_scratch/poc-payload.bin" "$first_scratch/fetched.bin" \
+	"$first_scratch/publisher/node.log" >"$work/first-run-files"
+rm -rf "$state"
+mkdir "$state"
+run_check "$stub_cli"
+assert_status_zero
+[ "$scratch" != "$first_scratch" ] || flunk "both runs used $scratch"
+ls -A "$work/scratch" >"$work/scratch-entries"
+assert_line_count "$work/scratch-entries" 2
+cksum "$first_scratch/poc-payload.bin" "$first_scratch/fetched.bin" \
+	"$first_scratch/publisher/node.log" >"$work/first-run-files-after"
+cmp -s "$work/first-run-files" "$work/first-run-files-after" ||
+	flunk "the second run changed the first run's files"
 end
 
 # --- The caller chooses where the scratch directory is made ------------------
@@ -495,6 +768,42 @@ assert_failed_at scratch
 assert_line_count "$state/invocations" 0
 ls -A "$work/cwd" >"$work/cwd-entries"
 assert_line_count "$work/cwd-entries" 0
+end
+
+begin "a scratch parent given with --scratch-parent holds the scratch directory"
+mkdir "$work/chosen"
+run_check --scratch-parent "$work/chosen" "$stub_cli"
+assert_status_zero
+case $scratch in
+"$work/chosen"/*/*) flunk "the scratch directory '$scratch' is not a direct child of $work/chosen" ;;
+"$work/chosen"/*) ;;
+*) flunk "the scratch directory '$scratch' is not under $work/chosen" ;;
+esac
+ls -A "$work/chosen" >"$work/chosen-entries"
+assert_line_count "$work/chosen-entries" 1
+assert_line_count "$state/invocations" 3
+end
+
+begin "a relative scratch parent gives an absolute scratch directory"
+cd "$work" || exit 2
+run_check --scratch-parent scratch "$stub_cli"
+cd "$repo" || exit 2
+assert_status_zero
+case $scratch in
+"$work/scratch"/*) ;;
+*) flunk "the scratch directory '$scratch' is not the absolute path of a child of $work/scratch" ;;
+esac
+end
+
+begin "the scratch parent comes from TMPDIR when none is given"
+mkdir "$work/from-env"
+check_tmpdir=$work/from-env
+run_check_bare "$stub_cli"
+assert_status_zero
+case $scratch in
+"$work/from-env"/*) ;;
+*) flunk "the scratch directory '$scratch' is not under TMPDIR $work/from-env" ;;
+esac
 end
 
 # A directory may be named "-", which cd would read as "the previous directory".

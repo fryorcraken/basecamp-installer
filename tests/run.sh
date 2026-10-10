@@ -34,6 +34,7 @@ suite_dir=$(mktemp -d "$repo/tmp/unit.XXXXXX") || exit 2
 tests_run=0
 failures=0
 test_name=
+check_tmpdir=
 
 # begin NAME: a fresh state directory for the stubs and a fresh scratch parent.
 begin() {
@@ -43,6 +44,7 @@ begin() {
 	state=$work/state
 	mkdir -p "$state" "$work/scratch"
 	check_path=$stubs:$PATH
+	check_tmpdir=
 	test_failed=0
 }
 
@@ -62,6 +64,31 @@ run_check() {
 		>"$work/stdout" 2>"$work/stderr"
 	status=$?
 	scratch=$(sed -n 's/^storage-round-trip: scratch directory: //p' "$work/stderr")
+}
+
+# run_check_bare ARGUMENT...: like run_check, but states no scratch parent, and
+# gives the check the TMPDIR named by check_tmpdir (empty: none at all).
+run_check_bare() {
+	# shellcheck disable=SC2086
+	PATH=$check_path STUB_STATE=$state STUB_REAL_SLEEP=$real_sleep \
+		STUB_REAL_SHA256=$real_sha256 TMPDIR=$check_tmpdir \
+		$shell_under_test "$check" "$@" \
+		>"$work/stdout" 2>"$work/stderr"
+	status=$?
+	scratch=$(sed -n 's/^storage-round-trip: scratch directory: //p' "$work/stderr")
+}
+
+# make_toolbox DIR: a directory holding every tool the check, the stub curl and
+# the stub storage CLI use, as links, and the stub curl as curl. A test sets
+# check_path to it after taking one tool out, so that tool is the only thing
+# missing.
+make_toolbox() {
+	mkdir "$1"
+	for tool in "${shell_under_test%% *}" awk sed cmp wc mktemp cat mkdir sleep \
+		cksum tr cp grep ls rm sha256sum; do
+		ln -s "$(command -v "$tool")" "$1/$tool"
+	done
+	ln -s "$stubs/curl" "$1/curl"
 }
 
 flunk() {
@@ -99,6 +126,27 @@ assert_line_count() {
 	count=0
 	[ -f "$1" ] && count=$(grep -c '' "$1")
 	[ "$count" -eq "$2" ] || flunk "$(basename "$1") has $count lines, expected $2"
+}
+
+# The scratch parent holds nothing: the check refused before making its
+# scratch directory.
+assert_no_scratch_made() {
+	ls -A "$work/scratch" >"$work/scratch-entries"
+	assert_line_count "$work/scratch-entries" 0
+}
+
+# After a pass, standard output is the five result lines and nothing else. The
+# CID is the one the stub publisher recorded and the digest is taken here, from
+# the file the check wrote, so neither comes from what the check printed.
+assert_result_lines() {
+	recorded_cid=$(sed -n '1s/^publisher \([^ ]*\) .*/\1/p' "$state/uploads")
+	[ -n "$recorded_cid" ] || flunk "the stub publisher recorded no upload"
+	expected_sha256=$($real_sha256 <"$scratch/poc-payload.bin")
+	expected_sha256=${expected_sha256%% *}
+	printf 'cid=%s\nfilename=poc-payload.bin\nblock_size=131072\nmimetype=application/octet-stream\nsha256=%s\n' \
+		"$recorded_cid" "$expected_sha256" >"$work/expected-stdout"
+	cmp -s "$work/expected-stdout" "$work/stdout" ||
+		flunk "stdout is: $(cat "$work/stdout"); expected: $(cat "$work/expected-stdout")"
 }
 
 # A failed run names its step on standard error and prints no result line.
