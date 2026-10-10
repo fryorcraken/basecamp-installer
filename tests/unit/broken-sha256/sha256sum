@@ -1,0 +1,22 @@
+#!/bin/sh
+# A sha256 tool that works once and then breaks, for the storage-round-trip
+# unit tests. The check hashes its test content first and the fetched content
+# second, so the second call is the one that verifies the download.
+#
+# With the knob file $STUB_STATE/sha-prints-nothing the broken calls exit 0
+# and print nothing; without it they exit 1.
+
+set -u
+state=${STUB_STATE:?STUB_STATE is not set}
+
+calls=0
+[ -f "$state/sha-calls" ] && calls=$(cat "$state/sha-calls")
+calls=$((calls + 1))
+printf '%s\n' "$calls" >"$state/sha-calls"
+
+if [ "$calls" -ge 2 ]; then
+	[ -f "$state/sha-prints-nothing" ] && exit 0
+	exit 1
+fi
+# shellcheck disable=SC2086
+exec ${STUB_REAL_SHA256:?STUB_REAL_SHA256 is not set}

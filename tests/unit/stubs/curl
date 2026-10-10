@@ -1,0 +1,180 @@
+#!/bin/sh
+# Stub curl for the storage-round-trip unit tests: answers REST requests for
+# the stub storage nodes, from the files under $STUB_STATE.
+#
+# The CID it returns for an upload depends on the uploaded bytes, the filename,
+# the block size and the mimetype, as a real node's does, so a check that
+# compares CIDs is comparing something the upload decided.
+#
+# Every request is logged to $STUB_STATE/requests as one line:
+#   METHOD URL [header] [header]...
+# and every upload to $STUB_STATE/uploads as: ROLE CID FILENAME BLOCKSIZE MIMETYPE
+#
+# Knobs, as files under $STUB_STATE (ROLE is publisher, fetcher or reproducer):
+#   foreign-everywhere      a server that is not a node answers 200 on every
+#                           port no stub node listens on
+#   upload-status-ROLE      holds the HTTP status an upload is refused with
+#   upload-empty-ROLE       an upload answers 200 with an empty body
+#   cid-salt-ROLE           this node's CIDs differ from every other node's
+#   cid-ignores-filename    the filename does not affect the CID
+#   cid-ignores-block-size  the block size does not affect the CID
+#   manifest-status         holds the HTTP status the manifest answers with
+#   manifest-body           holds the body the manifest answers with
+#   fetch-status            holds the HTTP status the download answers with
+#   fetch-corrupt           the download changes one byte, same length
+#   fetch-truncate          the download is a prefix, reported as complete
+#   fetch-partial           the download is a prefix and curl exits 18
+
+set -u
+state=${STUB_STATE:?STUB_STATE is not set}
+
+out=/dev/null
+upload_file=
+url=
+header_log=
+content_type=
+content_disposition=
+while [ $# -gt 0 ]; do
+	case $1 in
+	--output)
+		out=$2
+		shift 2
+		;;
+	--max-time | --noproxy | --write-out) shift 2 ;;
+	--header)
+		header_log="$header_log [$2]"
+		case $2 in
+		Content-Type:*) content_type=${2#Content-Type: } ;;
+		Content-Disposition:*) content_disposition=${2#Content-Disposition: } ;;
+		esac
+		shift 2
+		;;
+	--data-binary)
+		upload_file=${2#@}
+		shift 2
+		;;
+	http://*)
+		url=$1
+		shift
+		;;
+	*) shift ;;
+	esac
+done
+
+method=GET
+[ -n "$upload_file" ] && method=POST
+printf '%s %s%s\n' "$method" "$url" "$header_log" >>"$state/requests"
+
+# reply STATUS [EXIT]: what --write-out '%{http_code}' prints, then curl's exit.
+reply() {
+	printf '%s' "$1"
+	exit "${2:-0}"
+}
+
+local_part=${url#http://127.0.0.1:}
+if [ "$local_part" = "$url" ]; then
+	echo "stub curl: $url is not on 127.0.0.1" >&2
+	reply 000 6
+fi
+port=${local_part%%/*}
+path_and_query=/${local_part#*/}
+path=${path_and_query%%\?*}
+query=
+case $path_and_query in
+*\?*) query=${path_and_query#*\?} ;;
+esac
+
+role=
+[ -f "$state/role-$port" ] && role=$(cat "$state/role-$port")
+if [ -z "$role" ] || [ ! -f "$state/listening-$role" ]; then
+	if [ -f "$state/foreign-everywhere" ]; then
+		echo "not a storage node" >"$out"
+		reply 200
+	fi
+	echo "stub curl: connection refused on port $port" >&2
+	reply 000 7
+fi
+
+case $path in
+/api/storage/v1/spr)
+	printf 'spr:STUB-%s' "$role" >"$out"
+	reply 200
+	;;
+/api/storage/v1/data)
+	[ "$method" = POST ] || reply 405
+	if [ -f "$state/upload-status-$role" ]; then
+		echo "upload refused" >"$out"
+		reply "$(cat "$state/upload-status-$role")"
+	fi
+	block_size=${query#blockSize=}
+	filename=$(printf '%s\n' "$content_disposition" | sed -n 's/.*filename="\([^"]*\)".*/\1/p')
+	cid_filename=$filename
+	cid_block_size=$block_size
+	[ -f "$state/cid-ignores-filename" ] && cid_filename=any
+	[ -f "$state/cid-ignores-block-size" ] && cid_block_size=any
+	cid_salt=
+	[ -f "$state/cid-salt-$role" ] && cid_salt=$role
+	cid=z$(printf '%s|%s|%s|%s' "$cid_filename" "$cid_block_size" "$content_type" "$cid_salt" |
+		cksum | tr -d ' ')c$(cksum <"$upload_file" | tr -d ' ')
+	cp "$upload_file" "$state/content-$cid"
+	size=$(wc -c <"$upload_file")
+	printf '{"cid":"%s","manifest":{"manifestVersion":0,"treeCid":"zTree","blockSize":%s,"datasetSize":%s,"filename":"%s","mimetype":"%s"}}' \
+		"$cid" "$block_size" "$((size + 0))" "$filename" "$content_type" >"$state/manifest-$role-$cid"
+	printf '%s %s %s %s %s\n' "$role" "$cid" "$filename" "$block_size" "$content_type" >>"$state/uploads"
+	if [ -f "$state/upload-empty-$role" ]; then
+		: >"$out"
+	else
+		printf '%s' "$cid" >"$out"
+	fi
+	reply 200
+	;;
+/api/storage/v1/data/*/network/manifest)
+	cid=${path#/api/storage/v1/data/}
+	cid=${cid%/network/manifest}
+	if [ -f "$state/manifest-status" ]; then
+		echo "manifest unavailable" >"$out"
+		reply "$(cat "$state/manifest-status")"
+	fi
+	if [ -f "$state/manifest-body" ]; then
+		cat "$state/manifest-body" >"$out"
+		reply 200
+	fi
+	[ -f "$state/manifest-$role-$cid" ] || reply 404
+	cat "$state/manifest-$role-$cid" >"$out"
+	reply 200
+	;;
+/api/storage/v1/data/*/network/stream)
+	cid=${path#/api/storage/v1/data/}
+	cid=${cid%/network/stream}
+	if [ -f "$state/fetch-status" ]; then
+		echo "download refused" >"$out"
+		reply "$(cat "$state/fetch-status")"
+	fi
+	# The content comes from another node that holds it and is still running.
+	provider=
+	for other in publisher fetcher reproducer; do
+		[ "$other" != "$role" ] && [ -f "$state/manifest-$other-$cid" ] &&
+			[ -f "$state/listening-$other" ] && provider=$other
+	done
+	if [ -z "$provider" ]; then
+		echo "stub curl: operation timed out, no provider for $cid" >&2
+		reply 000 28
+	fi
+	printf '%s\n' "$role" >>"$state/fetched-by"
+	if [ -f "$state/fetch-corrupt" ]; then
+		sed '1s/^0/1/' "$state/content-$cid" >"$out"
+	elif [ -f "$state/fetch-truncate" ]; then
+		sed -n '1,100p' "$state/content-$cid" >"$out"
+	elif [ -f "$state/fetch-partial" ]; then
+		sed -n '1,100p' "$state/content-$cid" >"$out"
+		echo "stub curl: transfer closed with outstanding read data remaining" >&2
+		reply 200 18
+	else
+		cp "$state/content-$cid" "$out"
+	fi
+	reply 200
+	;;
+*)
+	reply 404
+	;;
+esac
