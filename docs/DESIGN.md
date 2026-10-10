@@ -5,7 +5,11 @@ exists, for Linux x86_64 and a dynamic build (see Risks). Portable, compressed
 and other-platform sizes are unmeasured, and the single-file form (below) is
 conditional on them. Anything stated here as a fact about another repository
 was read from source in October 2026 and can be re-checked there; this
-document records what was non-obvious, not what a command can answer.
+document records what was non-obvious, not what a command can answer. A fact
+marked **observed** was also seen on localhost, on Linux x86_64, by
+`tests/integration/storage-round-trip.sh` against a CLI built from
+`logos-storage-nim` `v0.5.3-2-g9abeb709`; the `two-node-poc` change's
+`design.md` under `openspec/changes/` holds the detail.
 
 ## Goal
 
@@ -74,14 +78,25 @@ The artifact is a single file that can be shared by USB, on forums, etc.
   `logos-storage-nim` (`make STATIC=1 libstorage`; link also needs
   `libnatpmp`, `miniupnpc`, `libbacktrace`, `libplum`). There is no
   fetch-one-CID-and-exit call: every path starts a node, downloads, stops.
-  Ephemeral fetches should pass `advertise=false`.
+  Ephemeral fetches should pass `advertise=false`. **Observed** for the CLI:
+  it has no subcommands, and a fetch is start, poll REST until ready, stream
+  the CID, `SIGTERM`. Driving it from shell needs an HTTP client (`curl`).
+- Downloads are not resumable: no route takes an offset and no download state
+  is kept. Blocks already in the store are not fetched again (read from
+  source). **Observed** for a completed download only: it is served again with
+  the provider gone and after a node restart.
 - `logos-storage-nim` GitHub releases publish no binary assets, so sizes can
   only come from a build.
 - **A CID is not just a function of the bytes.** It is the manifest CID, and
   the manifest includes `filename`, `mimetype` and `blockSize`. Changing the
   filename or chunk size changes the CID. Publishing must pin both, and if
   upstream publishes with different settings, their CID is used as-is rather
-  than re-uploading our own copy.
+  than re-uploading our own copy. **Observed:** the same bytes, filename and
+  block size give the same CID on a node that never held the content, and a
+  different filename or block size gives a different one. The mimetype must be
+  pinned too: an HTTP client that is not told one sends its own default, and
+  a real node's manifest was seen to carry what the upload stated. That a
+  different mimetype changes the CID was not run.
 - **Content expires.** Blocks get `block-ttl` (default 30 days) and are
   deleted when it passes, including blocks that were downloaded rather than
   uploaded. The C API cannot extend expiry. Any `serve` or `publish` node must
