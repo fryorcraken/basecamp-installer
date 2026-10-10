@@ -115,7 +115,16 @@ None.
 
 ## Lessons
 
-None.
+Lessons about specflow itself, agreed with the owner and filed upstream:
+
+- `Bash(gh api *)` and `Bash(gh pr *)` in the init template's allowlist
+  auto-approve mutating calls:
+  https://github.com/fryorcraken/agent-spec-flow/issues/17
+- `worktree.baseRef: head` contradicts the CLAUDE.md block's claim that a
+  `name` worktree branches from `origin/main`:
+  https://github.com/fryorcraken/agent-spec-flow/issues/18
+- The template's `.claude/*` ignore also hides project skills, commands and
+  hooks: https://github.com/fryorcraken/agent-spec-flow/issues/19
 
 ## code-reviewer
 
