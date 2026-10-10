@@ -1,5 +1,21 @@
 {
+  "worktree": {
+    "baseRef": "head"
+  },
   "enabledPlugins": {
     "specflow@agent-spec-flow": true
+  },
+  "permissions": {
+    "allow": [
+      "Bash(git *)",
+      "Bash(gh pr *)",
+      "Bash(gh run *)",
+      "Bash(gh issue *)",
+      "Bash(gh api *)",
+      "Bash(gh repo view *)",
+      "Bash(openspec *)",
+      "Bash(grep *)",
+      "Bash(pwd)"
+    ]
   }
 }
