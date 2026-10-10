@@ -14,29 +14,34 @@ anything is built on top of it.
 - Add a round-trip check: a POSIX `sh` program that drives a caller-supplied
   Logos Storage CLI through publish, fetch, verify and re-publish, using nodes
   on localhost only.
-- The check pins the filename and block size of the content it publishes,
-  reports the CID, and confirms the node's manifest carries both pinned values.
+- The check pins the filename, block size and mimetype of the content it
+  publishes, reports the CID, and confirms the node's manifest carries all
+  three pinned values.
 - The check fetches the content on a second, ephemeral node without
   advertising it, and verifies the fetched bytes and their sha256 against the
   original.
-- The check confirms the same bytes, filename and block size give the same CID
-  on a node that never held the content, and that a different filename or block
+- The check confirms the same bytes and pinned values give the same CID on a
+  node that never held the content, and that a different filename or block
   size gives a different one.
+- The check's command line, the tools it needs beyond POSIX, where its scratch
+  directory is made and that it is kept, and its refusal of a REST port that
+  already answers are part of the contract.
 - Every failure exits non-zero and names the step that failed; success is
   reported only when every verification ran and passed.
 - The first runnable integration layer for this project comes into existence.
 
 Not in this change: the installer file, any install step, the fleet's
 bootstrap, NAT traversal and relay, seeding and `block-ttl`, the signature, a
-CI workflow, and the choice of fetcher.
+CI workflow, the choice of fetcher, caller-chosen ports, concurrent runs, and a
+CID under a changed mimetype.
 
 ## Capabilities
 
 ### New Capabilities
 
 - `storage-round-trip`: the localhost check that content published to Logos
-  Storage under a pinned filename and block size is fetched intact by a second
-  node and has a reproducible CID.
+  Storage under a pinned filename, block size and mimetype is fetched intact by
+  a second node and has a reproducible CID.
 
 ### Modified Capabilities
 
