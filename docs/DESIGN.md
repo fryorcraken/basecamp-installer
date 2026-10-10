@@ -1,10 +1,11 @@
 # Design
 
-Status: decided in conversation, not implemented. Sizes are unmeasured; the
-single-file form (below) is conditional on them. Anything stated here as a
-fact about another repository was read from source in October 2026 and can be
-re-checked there; this document records what was non-obvious, not what a
-command can answer.
+Status: decided in conversation, not implemented. Only one size measurement
+exists, for Linux x86_64 and a dynamic build (see Risks). Portable, compressed
+and other-platform sizes are unmeasured, and the single-file form (below) is
+conditional on them. Anything stated here as a fact about another repository
+was read from source in October 2026 and can be re-checked there; this
+document records what was non-obvious, not what a command can answer.
 
 ## Goal
 
@@ -92,8 +93,21 @@ The artifact is a single file that can be shared by USB, on forums, etc.
 Tracked as GitHub Issues; this is the summary.
 
 - **Size.** Single-file viability depends on the size of the storage fetcher
-  per platform. Unmeasured; a Nix build of `libstorage` and the CLI for Linux
-  x86_64 is the baseline.
+  per platform. Issue #1 holds the raw numbers and the method; update both
+  together when more is measured.
+  - **First measurement**, Linux x86_64 only, a dynamic Nix build of
+    `logos-storage-nim` at `v0.5.3-2-g9abeb709` (`9abeb709306b963fce219b207fb8c226a36fc7fa`),
+    packages `libstorage` and `default` from the flake with `?submodules=1`:
+    `libstorage.so` 23,335,240 bytes and the `storage` CLI 29,183,576 bytes
+    (decimal MB, not MiB). Whether Nix stripped them was not checked, and
+    neither is compressed.
+  - **It is a proxy, not the rule's input.** The Fetcher rule compares the CLI
+    to a custom binary on `libstorage.a`, which was not built. `libstorage.so`
+    stands in for it, and a static link adds `libnatpmp`, `miniupnpc`,
+    `libbacktrace` and `libplum` plus a custom `main`, so the true ratio is
+    unknown and could land on either side of the 20-30% line.
+  - **Not covered:** Linux aarch64, macOS arm64, a portable build, a
+    compressed payload.
 - **Fleet dependence.** Bootstrap, AutoNAT and relay all rely on the central
   fleet. Behaviour with the fleet unreachable is untested.
 - **Seeder retention.** At least one node must stay up with a large
