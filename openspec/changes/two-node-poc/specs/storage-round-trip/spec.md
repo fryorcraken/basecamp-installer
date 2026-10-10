@@ -13,6 +13,17 @@ In this capability, the **publisher** is the node the content is first uploaded
 to, the **fetcher** is the node that downloads it by CID, and the **pinned
 values** are the filename `poc-payload.bin` and the block size 131072 bytes.
 
+This capability is written against the Logos Storage CLI from release 0.5.0
+on. A node of that CLI listens on two TCP ports, the REST API port
+(`--api-port`) and the peer-to-peer listen port (`--listen-port`), plus a
+metrics port only when the metrics server is enabled; it has no separate
+discovery port and no `--disc-port` option. An earlier CLI, whose node also
+opens a UDP discovery port, is outside this capability.
+
+The **reserved ports** are TCP 8080, which that CLI gives the REST API when
+none is stated, and TCP 8500 and UDP 8090, which the Basecamp storage module
+uses by default.
+
 ## ADDED Requirements
 
 ### Requirement: The check is a POSIX sh program
@@ -65,21 +76,28 @@ machine.
   bootstrap node it is given is a node this run started
 
 ### Requirement: Ports are chosen explicitly
-The check MUST set every port a node listens on explicitly: the REST API port,
-the peer-to-peer listen port and the discovery port. It MUST NOT use the
-storage defaults UDP 8090 and TCP 8500, and MUST NOT give two nodes of one run
-the same port.
-
-#### Scenario: Default ports are occupied
-- **WHEN** another process holds UDP 8090 and TCP 8500 while the check runs
-  against a working storage CLI
-- **THEN** the check's result is unaffected by it
+The check MUST state, in every node's invocation, both ports that node listens
+on: the REST API port with `--api-port` and the peer-to-peer listen port with
+`--listen-port`. Each stated port MUST be a number from 1 to 65535 that is not
+a reserved port, and the check MUST NOT give two ports of one run the same
+number, whether to one node or to two. The check MUST NOT enable a node's
+metrics server, and MUST NOT pass `--disc-port`.
 
 #### Scenario: Ports passed to each node
 - **WHEN** the check starts a node
-- **THEN** the storage CLI invocation states that node's REST API, listen and
-  discovery ports, none of them 8090 or 8500, and none already given to another
-  node of the same run
+- **THEN** the storage CLI invocation carries `--api-port` and `--listen-port`,
+  each with a non-zero port that is none of 8080, 8090 and 8500 and that no
+  other port of the same run uses
+
+#### Scenario: No other listener is requested
+- **WHEN** the check starts a node
+- **THEN** the storage CLI invocation carries neither `--disc-port` nor
+  `--metrics`
+
+#### Scenario: Reserved ports are occupied
+- **WHEN** another process holds TCP 8080, TCP 8500 and UDP 8090 while the
+  check runs against a working storage CLI
+- **THEN** the check's result is unaffected by it
 
 ### Requirement: Nodes start within a bounded wait
 The check MUST wait for each node it starts to accept REST requests, for a

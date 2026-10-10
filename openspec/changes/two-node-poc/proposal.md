@@ -46,8 +46,8 @@ None.
 
 - New release-tooling and test code; no shipped installer file exists yet and
   none is produced here.
-- A new dependency on a built `logos-storage` CLI, supplied to the check by its
-  caller. How it is built is the design's concern.
+- A new dependency on a built `logos-storage` CLI, release 0.5.0 or later,
+  supplied to the check by its caller. How it is built is the design's concern.
 - `docs/DESIGN.md` states several facts as read from source and untested; what
   this change observes about them is recorded there and in `design.md`.
 - The overlay's `Integration` test-layer row describes this check as a target.
