@@ -174,15 +174,24 @@ check to detect one, and the check does not try:
 What an earlier CLI does when driven by this check was not run and is not
 claimed.
 
-### The mimetype is pinned as well
+### Why the mimetype is a pinned value
 
-The manifest holds `filename`, `mimetype` and `blockSize`, and the CID is the
-manifest's. `curl --data-binary` sends
-`Content-Type: application/x-www-form-urlencoded` unless told otherwise, so an
-upload that states only the filename and block size still puts a mimetype in
-the manifest, chosen by the HTTP client. Every upload therefore states
-`application/octet-stream`. The spec names only two pinned values; this is
-reported to the `spec-writer` and marked `NO SPEC:` in the unit suite.
+The issue names two values to pin, the filename and the block size. The
+manifest holds a third, `mimetype`, and the CID is the manifest's. `curl
+--data-binary` sends `Content-Type: application/x-www-form-urlencoded` unless
+told otherwise, so an upload that states only the filename and block size still
+puts a mimetype in the manifest, chosen by the HTTP client: a publisher using
+another client, or another `curl` option, would get another CID from the same
+bytes, filename and block size, with no error. The spec therefore pins
+`application/octet-stream` as a third value, and the check treats it as it
+treats the other two: stated in every upload, compared in the publisher's
+manifest, and printed on a pass.
+
+The check does not upload under a second mimetype to show the CID moves, as it
+does for the filename and the block size; the spec puts that outside the
+capability. That the mimetype is in the manifest is **observed** (the manifest
+line above); that changing it changes the CID is read from the manifest being
+what the CID is computed over, and was not run.
 
 ### The test content is deterministic
 
@@ -202,24 +211,28 @@ every hardcoded CID would change with it.
 
 ### Three nodes, and the third has no bootstrap node
 
-The publisher and the fetcher are the spec's. The reproduction needs a node
-that started empty and has not fetched the content, so it cannot be either of
-them. The reproducer is started with `--no-bootstrap-node`: it has no peer, so
-an equal CID can only have come from the bytes and the pinned values. Giving it
-the publisher as a bootstrap node would also meet the requirement, but would
-leave "it never fetched" resting on the absence of a request rather than on the
-absence of a route. The two changed-value uploads go to the reproducer too, so
-the publisher's store holds exactly the one dataset the fetcher asks for.
+The reproduction needs a node that started empty and has not fetched the
+content, so it can be neither the publisher nor the fetcher. The reproducer is
+started with `--no-bootstrap-node`: it has no peer, so an equal CID can only
+have come from the bytes and the pinned values. Giving it the publisher as a
+bootstrap node was the alternative; it would leave "it never fetched" resting
+on the absence of a request rather than on the absence of a route, and the spec
+now requires the reproducer to have no bootstrap node. The two changed-value
+uploads go to the reproducer too, so the publisher's store holds exactly the
+one dataset the fetcher asks for.
 
 ### The manifest is parsed with `sed`
 
-`jq` is not on a stock desktop. The check extracts `"blockSize":<digits>` and
-`"filename":"<text>"` with two `sed` expressions. This is safe for these two
-keys because a JSON string cannot contain an unescaped quote, so no value can
-forge the `"key":` sequence. It fails closed: no `blockSize` is "cannot parse",
-no `filename` is reported as `none` and is a mismatch, and a filename with an
-escaped quote stops at the backslash and is a mismatch. A general JSON reader
-in `sh` was not attempted.
+`jq` is not on a stock desktop. The check extracts `"blockSize":<digits>`,
+`"filename":"<text>"` and `"mimetype":"<text>"` with three `sed` expressions.
+This is safe for these keys because a JSON string cannot contain an unescaped
+quote, so no value can forge the `"key":` sequence. It fails closed: no
+`blockSize` is "cannot parse", a missing `filename` or `mimetype` is reported
+as `none` and is a mismatch, and a value with an escaped quote stops at the
+backslash and is a mismatch. The mimetype is compared as the node prints it,
+which is **observed** to be `application/octet-stream` with an unescaped `/`; a
+node that wrote `\/` would fail the check rather than pass it. A general JSON
+reader in `sh` was not attempted.
 
 ### Process handling
 
@@ -247,10 +260,13 @@ other rows name the test written for the guard, which was not seen failing.
 
 | Guard | Without it |
 |---|---|
-| The probe that nothing answers on a node's REST port before the node starts | A foreign server on that port answers the readiness poll for a node that died binding it, and the check carries on against a stranger. Watched red: "a foreign server on the REST port is refused". |
+| The probe that nothing answers on a node's REST port before the node starts | A foreign server on that port answers the readiness poll for a node that died binding it, and the check carries on against a stranger. Watched red: "a foreign server on the publisher's REST port is refused". |
+| The mimetype comparison in `check_manifest` | A manifest carrying a mimetype the HTTP client chose passes, and the printed CID is one a second publisher cannot reproduce. Watched red: "manifest reports another mimetype" and "manifest reports no mimetype". |
+| The scratch parent's absolute form goes to its own variable | The failed `cd` empties the variable the diagnostic prints, so a scratch parent that is not a directory is refused without being named. Watched red: "a scratch parent that does not exist is refused and named" and "a scratch parent that is a file is refused and named". |
+| A relative scratch parent is prefixed with `./`, and an empty one is refused, before `cd` | `cd -- -` means "the previous directory", so a directory named `-` is not entered; and `./` alone, or `cd ''` in shells that accept it, is the current directory, so an empty scratch parent would put the scratch directory in the caller's working directory. Watched red: "a scratch parent named - is a directory like any other" and "an empty scratch parent is refused". |
 | The CID must be letters and digits only | An empty or multi-line upload answer is placed in the manifest URL and the failure is blamed on the manifest step. Test, not watched red: "upload returns no CID". |
 | A CLI name with no slash is prefixed with `./` | The shell looks the name up on `PATH`, which is the search the spec forbids. Test, not watched red: "a bare name runs the file in the current directory". |
-| `--listen-ip=127.0.0.1` | The node's peer-to-peer listener binds every interface (the CLI's default). No unit test can see a bind address; the spec's wording is met either way, and this is belt for "confined to localhost". |
+| `--listen-ip=127.0.0.1` | The node's peer-to-peer listener binds every interface (the CLI's default), so a machine on the same network could reach a node the spec confines to localhost. Watched red: "nodes are confined to localhost", which sees the option on each invocation. No test sees the address a real node binds. |
 | The peer record must start with `spr:` and hold only base64url characters | Whatever the publisher's REST port returned becomes a command-line argument of the fetcher. No test turns red: the stub always returns a well-formed record. |
 | `cmp` after the sha256 comparison | Nothing observable: content that differs has a different sha256 first. It is the spec's second comparison, and only a sha256 collision could reach it. |
 
@@ -279,9 +295,19 @@ release payload will be.
   node accepts the options, whether the REST routes exist, or whether a real
   CID reproduces: only a run of the check against a built CLI does.
 
-The scratch directory is kept after a pass as after a failure, and
-`--scratch-parent` chooses where it is made (default `$TMPDIR`, then `/tmp`).
-Both are unspecified and marked `NO SPEC:` or reported.
+### The scratch directory is made by `mktemp -d` under a 077 umask
+
+The spec asks for a directory the run creates, new for each run, with no
+permission for group or others, and never deleted by the check. `mktemp -d`
+gives the first two atomically and fails if it cannot, which a `mkdir` of a
+name built from `$$` would not: a process id repeats, and the name can be
+guessed and created first by another user of a shared `/tmp`. `umask 077` at
+the top of the program covers the directory and every file later written under
+it, the node logs included. `mktemp` is not in POSIX, so it is one of the three
+tools the check names and looks for before doing anything.
+
+The check keeps the directory after a pass as after a failure so that a pass
+can be inspected the same way; removing it is the caller's.
 
 ## Risks / Trade-offs
 

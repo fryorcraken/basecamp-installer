@@ -69,14 +69,14 @@ end
 
 # --- Full pass ---------------------------------------------------------------
 
-begin "full pass prints the four result lines"
+begin "full pass prints the five result lines and nothing else"
 run_check "$stub_cli"
 assert_status_zero
 recorded_cid=$(sed -n '1s/^publisher \([^ ]*\) .*/\1/p' "$state/uploads")
 # Derived here from the file the check wrote, not from what the check printed.
 expected_sha256=$($real_sha256 <"$scratch/poc-payload.bin")
 expected_sha256=${expected_sha256%% *}
-printf 'cid=%s\nfilename=poc-payload.bin\nblock_size=131072\nsha256=%s\n' \
+printf 'cid=%s\nfilename=poc-payload.bin\nblock_size=131072\nmimetype=application/octet-stream\nsha256=%s\n' \
 	"$recorded_cid" "$expected_sha256" >"$work/expected-stdout"
 [ -n "$recorded_cid" ] || flunk "the stub publisher recorded no upload"
 cmp -s "$work/expected-stdout" "$work/stdout" ||
@@ -89,10 +89,19 @@ assert_status_zero
 assert_line_count "$state/invocations" 3
 sed -n 1p "$state/invocations" >"$work/publisher-args"
 sed -n 2p "$state/invocations" >"$work/fetcher-args"
-assert_contains "$work/publisher-args" "--no-bootstrap-node"
-assert_lacks "$work/publisher-args" "--bootstrap-node="
-assert_contains "$work/publisher-args" "--nat=extip:127.0.0.1"
-assert_contains "$work/fetcher-args" "--nat=extip:127.0.0.1"
+sed -n 3p "$state/invocations" >"$work/reproducer-args"
+for unbootstrapped in publisher reproducer; do
+	assert_contains "$work/$unbootstrapped-args" "--no-bootstrap-node"
+	assert_lacks "$work/$unbootstrapped-args" "--bootstrap-node="
+done
+assert_lacks "$work/fetcher-args" "--no-bootstrap-node"
+for node in publisher fetcher reproducer; do
+	tr ' ' '\n' <"$work/$node-args" >"$work/$node-arg-lines"
+	grep -x -- '--nat=extip:127\.0\.0\.1' "$work/$node-arg-lines" >/dev/null ||
+		flunk "the $node lacks --nat=extip:127.0.0.1: $(cat "$work/$node-args")"
+	grep -x -- '--listen-ip=127\.0\.0\.1' "$work/$node-arg-lines" >/dev/null ||
+		flunk "the $node lacks --listen-ip=127.0.0.1: $(cat "$work/$node-args")"
+done
 # The stub publisher's peer record is spr:STUB-publisher, and nothing else is.
 tr ' ' '\n' <"$work/fetcher-args" | grep -- '^--bootstrap-node' >"$work/fetcher-bootstrap"
 assert_line_count "$work/fetcher-bootstrap" 1
@@ -136,15 +145,15 @@ assert_contains "$work/first-upload" " poc-payload.bin 131072 "
 grep -F 'POST ' "$state/requests" | sed -n 1p >"$work/first-upload-request"
 assert_contains "$work/first-upload-request" "blockSize=131072"
 assert_contains "$work/first-upload-request" 'filename="poc-payload.bin"'
+assert_contains "$work/first-upload-request" '[Content-Type: application/octet-stream]'
 payload_size=$(wc -c <"$scratch/poc-payload.bin")
 [ "$payload_size" -gt 131072 ] || flunk "the test content is $payload_size bytes, not more than one block"
 [ $((payload_size % 131072)) -ne 0 ] || flunk "the test content is a whole number of blocks"
 end
 
-# NO SPEC: the spec pins the filename and the block size only, but the manifest
-# also holds the mimetype, so it changes the CID too. Every upload states
-# application/octet-stream.
-begin "NO SPEC: every upload states the same mimetype"
+# Scenario "Every upload states the mimetype": the upload to the publisher and
+# the three to the reproducer.
+begin "every upload states the pinned mimetype"
 run_check "$stub_cli"
 assert_status_zero
 grep -F 'POST ' "$state/requests" >"$work/upload-requests"
@@ -200,16 +209,22 @@ assert_failed_at "publisher start"
 assert_contains "$work/stderr" "not ready"
 end
 
-# NO SPEC: the spec does not say what happens when something else already
-# answers on a port the check is about to give a node. The check refuses to
-# start the node, so a foreign server is never mistaken for it.
-begin "NO SPEC: a foreign server on the REST port is refused"
+# --- A REST port that already answers is refused -----------------------------
+
+# Scenario "Foreign server on the publisher's REST port". The stub CLI would
+# exit at once if it were started, so only the refusal can produce "already
+# answers" with no invocation.
+begin "a foreign server on the publisher's REST port is refused"
 knob foreign-everywhere
 knob exit-at-start-publisher
 run_check "$stub_cli"
 assert_failed_at "publisher start"
 assert_contains "$work/stderr" "already answers"
 assert_line_count "$state/invocations" 0
+# The port the check asked about, as the stub curl logged it.
+probed_port=$(sed -n '1s|^GET http://127\.0\.0\.1:\([0-9]*\)/.*|\1|p' "$state/requests")
+[ -n "$probed_port" ] || flunk "the check made no request before starting the publisher"
+assert_contains "$work/stderr" "127.0.0.1:$probed_port"
 end
 
 # --- Content is published under the pinned values ----------------------------
@@ -228,27 +243,48 @@ end
 
 # --- The manifest carries the pinned values ----------------------------------
 
+# Each mismatch body differs from a matching manifest in the one value its test
+# names, so the diagnostic cannot come from another value's check.
+
 begin "manifest reports another block size"
-knob manifest-body '{"cid":"zX","manifest":{"blockSize":65536,"filename":"poc-payload.bin"}}'
+knob manifest-body '{"cid":"zX","manifest":{"blockSize":65536,"filename":"poc-payload.bin","mimetype":"application/octet-stream"}}'
 run_check "$stub_cli"
 assert_failed_at manifest
-assert_contains "$work/stderr" "131072"
-assert_contains "$work/stderr" "65536"
+assert_contains "$work/stderr" "expected block size 131072"
+assert_contains "$work/stderr" "reports 65536"
 end
 
 begin "manifest reports another filename"
-knob manifest-body '{"cid":"zX","manifest":{"blockSize":131072,"filename":"other.bin"}}'
-run_check "$stub_cli"
-assert_failed_at manifest
-assert_contains "$work/stderr" "poc-payload.bin"
-assert_contains "$work/stderr" "other.bin"
-end
-
-begin "manifest reports no filename"
-knob manifest-body '{"cid":"zX","manifest":{"blockSize":131072}}'
+knob manifest-body '{"cid":"zX","manifest":{"blockSize":131072,"filename":"other.bin","mimetype":"application/octet-stream"}}'
 run_check "$stub_cli"
 assert_failed_at manifest
 assert_contains "$work/stderr" "expected filename poc-payload.bin"
+assert_contains "$work/stderr" "reports other.bin"
+end
+
+begin "manifest reports no filename"
+knob manifest-body '{"cid":"zX","manifest":{"blockSize":131072,"mimetype":"application/octet-stream"}}'
+run_check "$stub_cli"
+assert_failed_at manifest
+assert_contains "$work/stderr" "expected filename poc-payload.bin"
+end
+
+begin "manifest reports another mimetype"
+knob manifest-body '{"cid":"zX","manifest":{"blockSize":131072,"filename":"poc-payload.bin","mimetype":"application/x-www-form-urlencoded"}}'
+run_check "$stub_cli"
+assert_failed_at manifest
+assert_contains "$work/stderr" "expected mimetype application/octet-stream"
+assert_contains "$work/stderr" "reports application/x-www-form-urlencoded"
+assert_line_count "$state/invocations" 1
+end
+
+begin "manifest reports no mimetype"
+knob manifest-body '{"cid":"zX","manifest":{"blockSize":131072,"filename":"poc-payload.bin"}}'
+run_check "$stub_cli"
+assert_failed_at manifest
+assert_contains "$work/stderr" "expected mimetype application/octet-stream"
+assert_contains "$work/stderr" "reports none"
+assert_line_count "$state/invocations" 1
 end
 
 begin "manifest request fails"
@@ -417,10 +453,59 @@ ls -A "$work/scratch" >"$work/scratch-entries"
 assert_line_count "$work/scratch-entries" 1
 end
 
-# NO SPEC: the spec does not say whether the scratch directory survives a pass.
-# It is left in place either way, so a pass can be inspected like a failure.
-begin "NO SPEC: the scratch directory is kept after a pass"
+# Scenario "Files survive a pass".
+begin "the scratch directory is kept after a pass"
 run_check "$stub_cli"
 assert_status_zero
+[ -f "$scratch/poc-payload.bin" ] || flunk "the test content is gone after a pass"
 [ -f "$scratch/fetched.bin" ] || flunk "the fetched content is gone after a pass"
+for node in publisher fetcher reproducer; do
+	assert_contains "$scratch/$node/node.log" "stub storage node: $node"
+done
+end
+
+# --- The caller chooses where the scratch directory is made ------------------
+# run_check states a scratch parent of its own first; the one a test adds comes
+# later on the command line and is the one the check uses.
+
+begin "a scratch parent that does not exist is refused and named"
+run_check --scratch-parent "$work/no-such-parent" "$stub_cli"
+assert_failed_at scratch
+assert_contains "$work/stderr" "$work/no-such-parent"
+[ ! -e "$work/no-such-parent" ] || flunk "the check created the scratch parent"
+assert_line_count "$state/invocations" 0
+end
+
+begin "a scratch parent that is a file is refused and named"
+: >"$work/parent-file"
+run_check --scratch-parent "$work/parent-file" "$stub_cli"
+assert_failed_at scratch
+assert_contains "$work/stderr" "$work/parent-file"
+assert_line_count "$state/invocations" 0
+end
+
+# An empty scratch parent is not a directory; it must not come to mean the
+# current directory.
+begin "an empty scratch parent is refused"
+mkdir "$work/cwd"
+cd "$work/cwd" || exit 2
+run_check --scratch-parent '' "$stub_cli"
+cd "$repo" || exit 2
+assert_failed_at scratch
+assert_line_count "$state/invocations" 0
+ls -A "$work/cwd" >"$work/cwd-entries"
+assert_line_count "$work/cwd-entries" 0
+end
+
+# A directory may be named "-", which cd would read as "the previous directory".
+begin "a scratch parent named - is a directory like any other"
+mkdir -p "$work/cwd/-"
+cd "$work/cwd" || exit 2
+run_check --scratch-parent - "$stub_cli"
+cd "$repo" || exit 2
+assert_status_zero
+case $scratch in
+"$work/cwd/-"/*) ;;
+*) flunk "the scratch directory '$scratch' is not under $work/cwd/-" ;;
+esac
 end

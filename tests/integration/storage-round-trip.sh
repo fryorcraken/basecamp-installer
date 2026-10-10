@@ -2,12 +2,12 @@
 # storage-round-trip.sh: publish a file on one Logos Storage node, fetch it by
 # CID from a second, and reproduce the CID on a third, all on localhost.
 #
-# usage: storage-round-trip.sh [--scratch-parent DIR] STORAGE_CLI
+# usage: storage-round-trip.sh [--scratch-parent DIR] [--] STORAGE_CLI
 #
 # The behaviour contract is the storage-round-trip capability spec; the
 # reasons for the choices below are in the two-node-poc change's design.md.
 # Diagnostics go to standard error as "storage-round-trip: <step>: <message>".
-# Standard output carries the four result lines, and only on a full pass.
+# Standard output carries the five result lines, and only on a full pass.
 
 set -u
 umask 077
@@ -15,7 +15,8 @@ umask 077
 PROGRAM=storage-round-trip
 
 # A CID is the manifest CID, and the manifest holds the filename, the block
-# size and the mimetype. All three are stated in every upload.
+# size and the mimetype. All three are stated in every upload and checked in
+# the publisher's manifest.
 PINNED_FILENAME=poc-payload.bin
 PINNED_BLOCK_SIZE=131072
 PINNED_MIMETYPE=application/octet-stream
@@ -199,7 +200,7 @@ parse_arguments() {
 		esac
 	done
 	[ $# -ge 1 ] && [ -n "$1" ] ||
-		fail usage "a storage CLI is required: $PROGRAM.sh [--scratch-parent DIR] STORAGE_CLI"
+		fail usage "a storage CLI is required: $PROGRAM.sh [--scratch-parent DIR] [--] STORAGE_CLI"
 	[ $# -eq 1 ] || fail usage "exactly one storage CLI is expected, got $#"
 	storage_cli=$1
 }
@@ -228,11 +229,19 @@ require_tools() {
 }
 
 create_scratch() {
+	# cd reads the operand "-" as "the previous directory", and refuses an
+	# empty one in some shells only. Neither reaches it.
+	case $scratch_parent in
+	'') fail scratch "the scratch parent is empty, which is not a directory" ;;
+	/*) parent_to_enter=$scratch_parent ;;
+	*) parent_to_enter=./$scratch_parent ;;
+	esac
 	# An absolute path, so the printed directory means the same from anywhere.
-	scratch_parent=$(CDPATH='' cd -- "$scratch_parent" 2>/dev/null && pwd) ||
+	# It goes to its own variable: the diagnostic needs the path as given.
+	absolute_parent=$(CDPATH='' cd -- "$parent_to_enter" 2>/dev/null && pwd) ||
 		fail scratch "$scratch_parent is not a directory"
-	scratch=$(mktemp -d "$scratch_parent/$PROGRAM.XXXXXX") && [ -d "$scratch" ] ||
-		fail scratch "cannot create a scratch directory under $scratch_parent"
+	scratch=$(mktemp -d "$absolute_parent/$PROGRAM.XXXXXX") && [ -d "$scratch" ] ||
+		fail scratch "cannot create a scratch directory under $absolute_parent"
 	note "scratch directory: $scratch"
 }
 
@@ -297,12 +306,16 @@ check_manifest() {
 		's/.*"blockSize"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$manifest")
 	reported_filename=$(sed -n \
 		's/.*"filename"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$manifest")
+	reported_mimetype=$(sed -n \
+		's/.*"mimetype"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$manifest")
 	[ -n "$reported_block_size" ] ||
 		fail manifest "cannot parse the manifest; see $manifest"
 	[ "$reported_block_size" = "$PINNED_BLOCK_SIZE" ] ||
 		fail manifest "expected block size $PINNED_BLOCK_SIZE, the manifest reports $reported_block_size"
 	[ "$reported_filename" = "$PINNED_FILENAME" ] ||
 		fail manifest "expected filename $PINNED_FILENAME, the manifest reports ${reported_filename:-none}"
+	[ "$reported_mimetype" = "$PINNED_MIMETYPE" ] ||
+		fail manifest "expected mimetype $PINNED_MIMETYPE, the manifest reports ${reported_mimetype:-none}"
 }
 
 fetch() {
@@ -366,8 +379,8 @@ main() {
 	check_cid_reproduces
 	check_cid_changes
 
-	printf 'cid=%s\nfilename=%s\nblock_size=%s\nsha256=%s\n' \
-		"$cid" "$PINNED_FILENAME" "$PINNED_BLOCK_SIZE" "$payload_sha256"
+	printf 'cid=%s\nfilename=%s\nblock_size=%s\nmimetype=%s\nsha256=%s\n' \
+		"$cid" "$PINNED_FILENAME" "$PINNED_BLOCK_SIZE" "$PINNED_MIMETYPE" "$payload_sha256"
 }
 
 main "$@"
