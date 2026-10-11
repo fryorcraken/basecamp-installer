@@ -654,20 +654,18 @@ refuse_publisher_cid "with a space" 'abc def'
 refuse_publisher_cid "with a dot" 'abc.def'
 refuse_publisher_cid "with a hyphen" 'abc-def'
 
-# refuse_reproducer_cid N STEP LABEL BODY: the reproducer answers its Nth upload
-# with BODY, and the run fails at STEP.
-refuse_reproducer_cid() {
-	begin "a reproducer upload answer $3 is not a CID"
-	knob "upload-body-reproducer-$1" "$4"
-	run_check "$stub_cli"
-	assert_failed_at "$2"
-	end
-}
-
-refuse_reproducer_cid 1 re-upload "with a slash" 'abc/def'
-refuse_reproducer_cid 1 re-upload "with a second line" 'abc
-def'
-refuse_reproducer_cid 3 "changed block size upload" "with a space" 'abc def'
+# The reproducer's answers go through the same check. Its first answer (the
+# re-upload) is not tested here: a malformed answer there is also not the
+# recorded CID, so the run fails at the re-upload step whether or not the
+# character check ran, and such a test cannot fail for the reason it names.
+# A later answer is compared only for difference from the recorded CID, so only
+# the character check refuses a malformed one: the third upload, with the
+# block size changed. Watched failing with the character check removed.
+begin "a reproducer upload answer that is not a CID is refused"
+knob upload-body-reproducer-3 'abc def'
+run_check "$stub_cli"
+assert_failed_at "changed block size upload"
+end
 
 # "Apart from trailing newlines": a node that ends its answer with newlines is
 # not refused, and the newlines are not part of the CID the check prints.
