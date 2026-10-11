@@ -11,9 +11,6 @@
 #   path relative to the repository root or absolute. It exists so a test can be
 #   watched failing against a copy of the check with one behaviour broken.
 
-# stub_cli and scratch are read by the sourced test file.
-# shellcheck disable=SC2034
-
 set -u
 
 tests_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd) || exit 2

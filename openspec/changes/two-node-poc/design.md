@@ -351,11 +351,14 @@ arithmetic.
 Random bytes (`/dev/urandom`) would satisfy the spec equally. Deterministic
 content was chosen because it makes the printed CID comparable across runs,
 machines and CLI versions, which is the property the no-seeders fallback rests
-on. **Observed:** three separate runs, under `bash` as `sh` and under
-`busybox sh`, printed the same CID. With the CLI at `v0.5.3-2-g9abeb709` that
-CID is `zDvZRwzkzpQY1AFjHNXTAUsh1nYyuHQWMwJsMT5jrPL49gGxWDph`; a different
-value from a later CLI means the manifest encoding or the chunking changed, and
-every hardcoded CID would change with it.
+on. **Observed:** every real-node run printed the same CID, under the
+machine's `sh` and under `busybox sh`, the last two against the check as this
+change leaves it (one run under each shell, each exit 0 with the five result
+lines). With the CLI at `v0.5.3-2-g9abeb709` that CID is
+`zDvZRwzkzpQY1AFjHNXTAUsh1nYyuHQWMwJsMT5jrPL49gGxWDph`, and the content's
+sha256 is `46532c61564f34d62d2b42ea062e6726535c6fc21981247faed5ece258fa059c`;
+a different CID from a later CLI means the manifest encoding or the chunking
+changed, and every hardcoded CID would change with it.
 
 ### Three nodes, and the third has no bootstrap node
 
@@ -475,6 +478,47 @@ release payload will be.
 - The unit suite sees every branch of the check. It cannot see whether a real
   node accepts the options, whether the REST routes exist, or whether a real
   CID reproduces: only a run of the check against a built CLI does.
+
+### The test file is linted through the runner, with no file-level directive
+
+`tests/unit/storage-round-trip.test.sh` is sourced by `tests/run.sh`, and
+every variable either file reads may be assigned in the other. The lint
+command is:
+
+```
+shellcheck --shell=sh -x -a tests/integration/storage-round-trip.sh tests/run.sh \
+    tests/unit/stubs/storage tests/unit/stubs/curl \
+    tests/unit/broken-sha256/sha256sum tests/unit/fixed-sha256/sha256sum
+```
+
+`-x` follows the `# shellcheck source=` line in the runner, so each file's
+assignments and reads are known to the other; `-a` (`--check-sourced`) reports
+what is found in the sourced file. All **observed** with `shellcheck` 0.11.0:
+
+- **Without `-a` the test file is not linted at all.** A misspelt `$scrach`
+  planted in it, and a variable it reads left unassigned in the runner, were
+  both silent under `-x` alone; only the runner's own unused assignment was
+  reported. Every earlier "no output" for this piece was run without `-a` and
+  says nothing about the test file.
+- **With `-x -a`, both plants are reported** (`SC2154` in the test file, at
+  the use; `SC2034` in the runner), with neither file carrying a file-level
+  directive.
+- **The test file named as its own argument** reports each of the runner's
+  variables as unassigned (`SC2154`) and the last assignment of each variable
+  only the runner reads as unused (`SC2034`). That is the noise the two
+  file-level directives, `disable=SC2034` in the runner and `disable=SC2154`
+  in the test file, were written against; they also hid every real misspelling
+  in the whole of both files. Both are removed, and the test file is not named
+  on the command line.
+
+What remains are per-line directives, each on the one command it is for:
+`SC2086` where the shell under test is deliberately word-split, and `SC2016`
+on the three `printf` commands whose single-quoted arguments are the source
+text of a stand-in program and must not expand where they are written.
+
+Considered: a use-site line such as `: "$stub_cli" "$scratch"` naming the
+cross-file variables. It needs keeping in step with both files by hand, and
+`-a` makes it unnecessary.
 
 ### The scratch directory is made by `mktemp -d` under a 077 umask
 

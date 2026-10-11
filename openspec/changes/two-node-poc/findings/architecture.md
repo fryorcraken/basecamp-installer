@@ -69,6 +69,27 @@ it is a genuine departure from the rules or a preference.
       session with `shellcheck` should run `shellcheck --shell=sh -x
       tests/run.sh tests/unit/*.sh tests/unit/stubs/*` first with the two
       file-level directives deleted.
+      **Settled by the `dev-writer`, with `shellcheck` 0.11.0
+      (`nix run nixpkgs#shellcheck`): fixed.** Both file-level directives are
+      deleted, and nothing replaces them at file level. What was measured:
+      with both deleted, `shellcheck --shell=sh -x tests/run.sh` prints
+      nothing, as the `tester` expected, but for a second reason nobody had
+      seen: under `-x` alone the sourced test file is used for its assignments
+      and reads and is not itself reported on. A misspelt `$scrach` planted in
+      the test file, and `stub_cli` misspelt where the runner assigns it, gave
+      one warning, `SC2034` on the runner's line; the two `SC2154` in the test
+      file were silent. With `-a` (`--check-sourced`) added, all three were
+      reported, and the test file's six `SC2016` notes with them. So the lint
+      is now `-x -a` over the runner, and the test file is not named on the
+      command line: named there, it is read without the runner and reports
+      nine of the runner's variables as unassigned and four assignments as
+      unused, which is the noise the directives were written for. The six
+      `SC2016` are single-quoted source text of stand-in programs and take
+      three per-line directives, one per `printf`. No test fails without
+      this; what shows it is the lint with the two plants, run and then
+      reverted. Suite after the edit: green under `sh` and under
+      `busybox sh`. The reasoning is in `design.md`, "The test file is linted
+      through the runner, with no file-level directive".
 
 ## Areas that were clean
 

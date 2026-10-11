@@ -4,8 +4,12 @@
 # Each test names the spec requirement or scenario it pins; NO SPEC marks a
 # behaviour the spec does not state.
 #
-# The variables a test reads are all assigned in run.sh, so a misspelt one is an
-# empty string and not an error:
+# The variables a test reads are all assigned in run.sh. This file therefore
+# carries no file-level shellcheck directive and is linted through run.sh, with
+# `shellcheck --shell=sh -x -a tests/run.sh`: -x follows the source line there
+# and -a reports what it finds here, so a misspelt name in either file is a
+# warning. Linted on its own, this file reports every one of these names as
+# unassigned.
 #   begin sets   $work (this test's directory), $state (where the stubs record
 #                what they saw), $check_path (the PATH the check is run with),
 #                $check_tmpdir and $check_tmpdir_unset (TMPDIR for
@@ -14,7 +18,7 @@
 #                $scratch (the scratch directory it printed)
 #   fixed for the whole suite   $check, $stubs, $stub_cli, $tests_dir, $repo,
 #                $shell_under_test, $real_sleep, $real_sha256
-# shellcheck shell=sh disable=SC2154
+# shellcheck shell=sh
 
 # --- The storage CLI is supplied by the caller -------------------------------
 
@@ -74,6 +78,8 @@ end
 # executable of the same name on PATH.
 begin "a bare name runs the file in the current directory"
 mkdir "$work/cwd"
+# The single-quoted text is the stand-in's source; it expands when that runs.
+# shellcheck disable=SC2016
 printf '#!/bin/sh\n: >"$STUB_STATE/local-cli-ran"\nexit 1\n' >"$work/cwd/storage"
 chmod +x "$work/cwd/storage"
 in_directory "$work/cwd" run_check storage
@@ -100,6 +106,7 @@ end
 begin "only shasum is available"
 make_toolbox "$work/toolbox"
 rm "$work/toolbox/sha256sum"
+# shellcheck disable=SC2016
 printf '%s\n' '#!/bin/sh' \
 	'[ "$#" -eq 2 ] && [ "$1" = -a ] && [ "$2" = 256 ] ||' \
 	'	{ echo "shasum: unexpected arguments: $*" >&2; exit 2; }' \
@@ -1304,6 +1311,7 @@ make_mktemp_shim() {
 	fake_tmp=$2
 	real_mktemp=$(command -v mktemp)
 	mkdir "$shim_dir" "$fake_tmp"
+	# shellcheck disable=SC2016
 	printf '%s\n' '#!/bin/sh' \
 		'[ "$#" -eq 2 ] && [ "$1" = -d ] || { echo "mktemp shim: unexpected arguments: $*" >&2; exit 2; }' \
 		'printf "%s\n" "$2" >>"$STUB_STATE/mktemp-templates"' \

@@ -64,7 +64,7 @@ built as `design.md` describes.
 
 ## 6. Against a real node
 
-- [x] 6.1 Run the check against a storage CLI built from `logos-storage-nim` with `sh` and with `busybox sh`; verified by exit 0, the five result lines and the same CID from both runs. The unit suite is run with the check under `sh` (bash on the machine used) and under `busybox sh`; it has not been run under `dash` or the macOS `sh` by the `dev-writer`.
+- [x] 6.1 Run the check against a storage CLI built from `logos-storage-nim` with `sh` and with `busybox sh`; verified by exit 0, the five result lines and the same CID from both runs, which is the CID `design.md` records; last run against the check as this change leaves it. The unit suite is run with the check under `sh` (bash on the machine used) and under `busybox sh`; it has not been run under `dash` or the macOS `sh` by the `dev-writer`.
 - [x] 6.2 Record what was observed, and what was only read from source, in `design.md` and `docs/DESIGN.md`; delivered as the entries marked "Observed"
-- [x] 6.3 Lint the check, `tests/run.sh` and the two stubs with `shellcheck --shell=sh -x`; verified by no output
+- [x] 6.3 Lint the check, `tests/run.sh`, the test file it sources, the two stubs and the two stand-in sha256 tools with `shellcheck --shell=sh -x -a`, with no file-level directive in the runner or the test file; verified by no output, and by a misspelt variable planted in each of the two files being reported (`design.md`, "The test file is linted through the runner, with no file-level directive")
 - [x] 6.4 Remove each guard in `design.md`'s Guards table from a copy of the check and record which unit test fails; delivered as that table, whose rows say where nothing turned red
