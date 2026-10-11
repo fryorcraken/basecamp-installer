@@ -1,0 +1,61 @@
+# Architecture review: two-node-poc
+
+Dimension covered: **architecture** only (the prompt named it). Judged against
+"How to shape a change" in `CLAUDE.md`. Nothing here is a correctness or
+security defect; every entry is a maintainability finding, and each says whether
+it is a genuine departure from the rules or a preference.
+
+- [ ] **`dev-writer`** — `tests/integration/storage-round-trip.sh:142-182` — `start_node` does four jobs and hides two of them behind its name. **Genuine departure** from "one function, one job" and "a guard is a job".
+      **Scenario:** one body creates the node's directories, runs the "nothing already answers on this port" guard, launches the process and polls for readiness; its own header comment joins two of them with "and waits". The next change that touches any one (a second guard, a different readiness signal, a data-directory option) edits a function whose other three jobs it must re-read, and "is the port guard run for every node?" can only be answered by reading the whole body. Split into `require_port_free NAME PORT`, the launch, and `wait_until_ready NAME PID PORT`; `start_node` then reads as the three calls in order.
+      **Severity:** low. **Measured:** the 71 unit tests pass as is, so the split is a pure refactor with a gate behind it.
+
+- [ ] **`dev-writer`** — `tests/integration/storage-round-trip.sh:142-166,371` — `start_node` takes its arguments two ways and hands its result back through an unnamed global. **Genuine, minor.**
+      **Scenario:** `$1` and `$2` are copied to `node_name`/`node_api_port` on entry, but `$3` and `$4` are used in place 20 lines later, after the reader has been told the parameters were named; `$4` is a single option string that is quoted but could be empty. The pid comes back as `started_pid`, which `main` copies to `fetcher_pid` on the very next line; for the other two nodes it is never read. A future caller that calls `start_node` twice before reading `started_pid` gets the second pid with no error.
+      **Fix shape:** name all four parameters on entry, and either return the pid in a variable named for the node or drop it, since `stop_node` is the only consumer and the fetcher is the only node stopped by pid.
+      **Severity:** low.
+
+- [ ] **`dev-writer`** — `tests/integration/storage-round-trip.sh:68-73` — `stop_node` also deregisters the pid from `node_pids`, and nothing says why. **Missing "why" comment.**
+      **Scenario:** a reader sees a stop function rewrite a list and asks whether it can be dropped. It cannot: `cleanup` would stop the fetcher a second time, and `kill` on a reaped pid can signal an unrelated process that was given the number since. The header comment says "ends one node and reaps it" and is silent on both the deregistration and the reason, which is what a later edit to `cleanup` would break.
+      **Severity:** low. Comment, or move the deregistration into its own `forget_node` so the name carries it.
+
+- [ ] **`dev-writer`** — `tests/integration/storage-round-trip.sh:301-349` — the stage functions take their inputs from ambient state, so the data flow of `main` is invisible at the call sites. **Departure from "pass what it needs; do not reach for ambient state"; preference-strength for a one-shot script.**
+      **Scenario:** `check_manifest` reads `$cid` and `PUBLISHER_API_PORT`, `fetch` reads `$cid` and `FETCHER_API_PORT`, `verify_fetched` reads `$fetched`, `$payload` and `$payload_sha256`, `check_cid_reproduces` reads `$cid`. `main` shows `fetch` followed by `verify_fetched` and nothing says that the first writes the file the second reads, or that `sha256_of` leaves its answer in a variable named `sha256` that `verify_fetched` then compares with `payload_sha256`. Reordering two lines of `main` (verify before fetch) fails only at run time, as "cannot compute the sha256", which names the wrong cause.
+      **Fix shape:** `check_manifest CID`, `fetch CID`, `verify_fetched FILE EXPECTED_SHA256`. The ports can stay constants.
+      **Severity:** low.
+
+- [ ] **`dev-writer`** — `tests/integration/storage-round-trip.sh:305-318` — `check_manifest` repeats one extract-and-compare shape three times, and the pinned values are listed again in `upload` and in the final `printf`. **The "fourth slightly-different copy" signal, at three.**
+      **Scenario:** the spec already grew from two pinned values to three (the mimetype), and each growth cost another `sed` expression, another `[ ... ] || fail` and another edit to the result line. A fourth pinned value (the dataset size, say) is another copy of all three. The two numeric/string extractions differ only in the pattern. A helper `manifest_field KEY` plus a loop over the pinned name/value pairs makes "add a pinned value" one line, and puts the "none" fallback for a missing key in one place instead of two (`filename`, `mimetype`) with `blockSize` as a third, differently-handled case.
+      **Severity:** low; **preference** until a fourth value is asked for, at which point it is the refactor-first commit.
+
+- [ ] **`dev-writer`** — `tests/integration/storage-round-trip.sh:336-349` — `check_cid_reproduces` and the two halves of `check_cid_changes` are the same upload-then-compare three times, with the sense of the comparison and the step name as the only differences. **Preference.**
+      **Scenario:** one helper, `expect_cid STEP same|different FILENAME BLOCK_SIZE`, would hold the diagnostic wording once. Today the three messages have drifted in shape ("the CID does not reproduce: recorded X, re-upload returned Y" against "changing the filename to F still returned the recorded CID X"), which is harmless but is the first sign of copies diverging.
+      **Severity:** low.
+
+- [ ] **`dev-writer`** — `tests/integration/storage-round-trip.sh:290-299` — `read_publisher_spr` validates with a three-arm `case` whose middle arm is a no-op and sets the same variable empty twice, and carries no comment saying why the character set is restricted.
+      **Scenario:** a reader cannot tell whether `spr:?*) ;;` is a mistake or the pass case, nor why base64url is the allow-list. The reason (the value becomes an argument on the fetcher's command line, so it must not be able to carry an option or a space) is only in `design.md`'s guard table, which the design itself says no test turns red for. Collapse to one rejecting pattern, `'' | spr: | spr:*[!A-Za-z0-9_=-]*) publisher_spr= ;;`, and state the reason in one line.
+      **Severity:** low. **Preference** on the `case`; the missing comment is the genuine part, because this is a guard no test would catch being loosened.
+
+- [ ] **`dev-writer`** — `tests/integration/storage-round-trip.sh:90-99` — `cleanup` ignores `INT` and `TERM` for its whole run and re-exits with the saved status, and neither choice is explained. **Missing "why" comment.**
+      **Scenario:** `trap '' INT TERM` means a second Ctrl-C during the up-to-`STOP_TIMEOUT`-per-node wait is swallowed, so a user who thinks the check hung has no way out but `SIGKILL`, and leaves nodes running. That may be exactly the intent (finish stopping the nodes), but a maintainer reading it will either "fix" it or copy it. One line saying which it is.
+      **Severity:** low.
+
+- [ ] **`tester`** — `tests/run.sh:11-12` and `tests/unit/storage-round-trip.test.sh:5` — blanket file-level `shellcheck disable=SC2034` / `SC2154` hide every unused or unassigned variable in the whole file, not just the handful this split needs. **Genuine, minor; the lint gate is blind to what it was disabled for.**
+      **Scenario:** `run.sh` assigns `stub_cli`, `scratch`, `repo` and others that only the sourced file reads, and the sourced file reads variables only `run.sh` assigns, so both directives are needed. But a typo such as `scrach=` in either file, or a dropped assignment in `begin`, is now invisible to `shellcheck`, which is the one static check the overlay's Test layers row relies on for these files. Replace with per-line disables on the few assignments, or with a single `: "$stub_cli" "$scratch" ...` use-site line that names the cross-file variables, so the directive's scope equals the intent.
+      **Severity:** low. **Measured:** `shellcheck` is not installed in this tree, so the claim that nothing else is hidden was not run; the suite itself passes, 71 tests.
+
+## Areas that were clean
+
+- **Shape of the whole.** One check script, one runner, one stub CLI, one stub `curl`, one broken-digest tool; the integration layer is separate from the unit layer and the unit suite drives the real script unchanged (no test-only hooks in the shipped path). The check's step order lives in `main` alone, and `fail` is the single exit for a failure.
+- **Data over logic where it counts.** The six ports and the pinned values are constants in one block, so "distinct and not reserved" is read off one place, and a test asserts it from the recorded command lines, not from the same constants.
+- **Guards are separate functions.** `require_storage_cli`, `require_tools`, `create_scratch`, `parse_arguments` and the upload CID check each do one thing and are called from one place; "is it called everywhere?" has an answer.
+- **No dependency added.** The check needs `curl`, `awk`, `sed`, `cmp`, `wc`, `mktemp` and a sha256 tool, all checked before any node starts; `design.md` records why `curl` and why no `jq`. Nothing to license.
+- **Process handling is bounded and documented.** The watchdog in `stop_node`, the background `curl` with `wait`, and "never call `fail` in a command substitution" are each explained in `design.md` and in comments, and each is exercised by a named test.
+- **CI.** `.github/workflows/` does not exist, so there is no gate measuring a moved path; `tests/run.sh` and `tests/integration/` match the overlay's Test layers rows. `tmp/` is ignored.
+- **Stub coupling is deliberate.** The stubs assign roles by start order and the broken-digest tool by call number, which ties them to the check's step order; the stub headers say so, and a reorder fails loudly rather than silently, so no box is opened.
+
+## What could not be measured
+
+The overlay names no mutation tool for POSIX shell, and none was run. `dash`
+and `shellcheck` are not installed here, so the suite was run only under the
+default `sh`; the design records `bash` and `busybox sh` runs and says the macOS
+`sh` and `dash` were not seen.
