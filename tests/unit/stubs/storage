@@ -1,0 +1,73 @@
+#!/bin/sh
+# Stub Logos Storage CLI for the storage-round-trip unit tests.
+#
+# It serves nothing itself: it records how it was invoked under $STUB_STATE and
+# marks its REST port as listening, and the stub curl beside it answers for it.
+# Nodes are told apart by start order: publisher, fetcher, reproducer.
+#
+# Knobs, as files under $STUB_STATE (ROLE is one of the three names):
+#   exit-at-start-ROLE    exit 1 without ever listening
+#   deaf-ROLE             keep running, never listen
+#   ignore-term-ROLE      keep running through SIGTERM
+#   kills-publisher-ROLE  stop the publisher before listening
+
+set -u
+state=${STUB_STATE:?STUB_STATE is not set}
+
+api_port=
+data_dir=
+for argument in "$@"; do
+	case $argument in
+	--api-port=*) api_port=${argument#*=} ;;
+	--data-dir=*) data_dir=${argument#*=} ;;
+	esac
+done
+
+printf '%s\n' "$*" >>"$state/invocations"
+case $(grep -c '' "$state/invocations") in
+1) role=publisher ;;
+2) role=fetcher ;;
+3) role=reproducer ;;
+*) role=unexpected ;;
+esac
+printf '%s\n' "$role" >"$state/role-$api_port"
+printf '%s\n' "$$" >>"$state/pids"
+printf '%s\n' "$$" >"$state/pid-$role"
+ls -A "$data_dir" >"$state/data-dir-at-start-$role" 2>&1
+# Every argument on a line of its own, so a test can tell "--name=value" from
+# "--name" followed by "value", which "$*" in the invocations file cannot.
+printf '%s\n' "$@" >"$state/args-$role"
+# A real node writes into its data directory as soon as it starts, and this stub
+# writes nothing else there. Without this marker every data directory would be
+# empty whatever the check did, so a check that gave one node another node's
+# directory would still see "empty at start". A directory two nodes share holds
+# the first one's marker when the second starts.
+[ -d "$data_dir" ] && printf '%s\n' "$role" >"$data_dir/started-by-stub"
+# Every STORAGE_ variable this process was started with, one per line; an
+# empty file when there is none.
+env | grep '^STORAGE_' >"$state/environment-$role"
+
+echo "stub storage node: $role on REST port $api_port"
+
+[ -f "$state/exit-at-start-$role" ] && exit 1
+
+if [ -f "$state/kills-publisher-$role" ]; then
+	kill "$(cat "$state/pid-publisher")"
+	while [ -f "$state/listening-publisher" ]; do
+		"${STUB_REAL_SLEEP:-sleep}" 1
+	done
+fi
+
+if [ -f "$state/ignore-term-$role" ]; then
+	: >"$state/listening-$role"
+	trap '' TERM
+	# Far longer than any bound the check has, so that a check which waits for
+	# this node to give up on its own is seen taking that long.
+	exec "${STUB_REAL_SLEEP:-sleep}" 90
+fi
+
+trap 'rm -f "$state/listening-$role"; kill "$sleeper" 2>/dev/null; exit 0' TERM
+[ -f "$state/deaf-$role" ] || : >"$state/listening-$role"
+"${STUB_REAL_SLEEP:-sleep}" 600 &
+sleeper=$!
+wait "$sleeper"
