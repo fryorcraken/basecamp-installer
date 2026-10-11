@@ -60,6 +60,15 @@ it is a genuine departure from the rules or a preference.
       the cross-file uses. This round added no new file-level directive.
       The new code in `tests/run.sh` and the test file was written to avoid
       unquoted expansions, but was not linted either.
+      **Re-read in the last `tester` pass: still deferred.** `shellcheck` is
+      still not among the commands this pass may run, so neither narrowing nor
+      removing the directives can be checked. This pass added no directive,
+      file-level or per-line: the three per-line `SC2086` disables (where
+      `$shell_under_test` is deliberately word-split) stay on the lines that
+      now call `under_stubs`, and none of the new code was linted. The next
+      session with `shellcheck` should run `shellcheck --shell=sh -x
+      tests/run.sh tests/unit/*.sh tests/unit/stubs/*` first with the two
+      file-level directives deleted.
 
 ## Areas that were clean
 

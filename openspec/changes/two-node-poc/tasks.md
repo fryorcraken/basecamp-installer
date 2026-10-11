@@ -28,12 +28,12 @@ built as `design.md` describes.
 - [x] 1.5 Refuse a scratch parent that is not a directory, naming it as given and creating nothing, and take a directory named `-` as a directory; verified by "a scratch parent that does not exist is refused and named", "a scratch parent that is a file is refused and named", "an empty scratch parent is refused" and "a scratch parent named - is a directory like any other"
 - [x] 1.6 Keep the scratch directory after a pass; verified by "the scratch directory is kept after a pass"
 - [x] 1.7 Fail naming `curl`, `mktemp` or `env` when it is missing, before any node and before the scratch directory; verified by "curl is not available", "mktemp is not available" and "env is not available"
-- [ ] 1.8 Fail naming `awk`, `sed`, `cmp` or `wc` when it is missing, likewise. `require_tools` looks for all four; no unit test removes one yet, and those four tests are the `tester`'s to write, so this row is not ticked by the `dev-writer`
+- [x] 1.8 Fail naming `awk`, `sed`, `cmp` or `wc` when it is missing, likewise; verified by "awk is not available", "sed is not available", "cmp is not available" and "wc is not available", each of which also fails when the diagnostic names one of the other four
 
 ## 2. Nodes
 
 - [x] 2.1 Start each node with both ports stated, distinct and not reserved, NAT `extip:127.0.0.1`, `--listen-ip=127.0.0.1`, and no `--disc-port` or `--metrics`; verified by "ports are stated, distinct and not reserved" and "nodes are confined to localhost"
-- [x] 2.2 Start the publisher and the reproducer with `--no-bootstrap-node` and the fetcher with the publisher's peer record only; verified by "nodes are confined to localhost"
+- [x] 2.2 Start the publisher and the reproducer with `--no-bootstrap-node` and the fetcher with the publisher's peer record only; verified by "the fetcher is bootstrapped from the publisher alone"
 - [x] 2.6 Refuse to start a node whose REST port already answers, naming the node and the port; verified by the three tests "a foreign server on the publisher's REST port is refused", the same for the fetcher's and the same for the reproducer's
 - [x] 2.3 Wait a bounded number of attempts for REST, failing with the node named when it exits early or never answers, and saying how many attempts were made; verified by "node exits during start" and "node never becomes ready"
 - [x] 2.4 Stop every node on exit, on failure and on `SIGTERM`, with `SIGKILL` as the fallback, including a node whose stop a signal interrupted; verified by the no-node-left assertion that ends every test, "a node that ignores SIGTERM is still stopped", "SIGTERM stops the running node and exits non-zero" and "SIGTERM during the stop of a node still leaves no node behind"
@@ -51,7 +51,7 @@ built as `design.md` describes.
 
 ## 4. Fetch and verify
 
-- [x] 4.1 Start the fetcher on an empty data directory after the CID is recorded, stream the CID with `advertise=false`, and stop the fetcher; verified by "the fetcher starts empty, fetches by CID without advertising, and is stopped"
+- [x] 4.1 Start the fetcher on an empty data directory after the CID is recorded, stream the CID with `advertise=false`, and stop the fetcher; verified by "each node is given a data directory of its own" (the empty start), "the fetcher fetches by CID without advertising", "the fetcher is started only after the CID is recorded" and "the fetcher is stopped before the reproducer is contacted"
 - [x] 4.2 Fail at the fetch step on an error answer, a short body or a provider that is gone, within a bound; verified by "fetch answers with an error", "download ends before the content is complete" and "publisher is gone when the fetcher asks"
 - [x] 4.3 Compare the fetched sha256 with the one computed before the upload and state both on a mismatch; verified by "fetched content differs", "fetched content is truncated" and the two "sha256 tool …" tests
 - [x] 4.4 Compare the fetched bytes with `cmp`, so that equal digests cannot pass a download that differs; verified by "equal digests do not hide a fetched content that differs", the one test that fails with the `cmp` call removed (`design.md`, Guards)
