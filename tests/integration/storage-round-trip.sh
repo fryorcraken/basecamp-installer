@@ -10,6 +10,8 @@
 # Standard output carries the five result lines, and only on a full pass.
 
 set -u
+# The scratch directory and every file written under it, the node logs and the
+# fetched content included, grant nothing to group or others.
 umask 077
 
 PROGRAM=storage-round-trip
@@ -49,6 +51,19 @@ REQUEST_TIMEOUT=30
 FETCH_TIMEOUT=60
 STOP_TIMEOUT=10
 
+# Variables. POSIX sh has no "local": every variable is global. A function's
+# working variables are therefore named after the function or the thing it
+# handles (launch_name, ready_dir, rest_max, reported_filename), and a new one
+# must not take a name another function uses. The names that are shared on
+# purpose are the six set just below, and these results, each set by the
+# function named and read by its callers:
+#   rest_exit, rest_status          rest
+#   last_started_pid                launch_node
+#   sha256_tool                     require_tools
+#   sha256                          sha256_of
+#   payload, payload_sha256         write_payload
+#   uploaded_cid                    upload
+#   publisher_spr                   read_publisher_spr
 storage_cli=
 scratch_parent=${TMPDIR:-/tmp}
 scratch=
@@ -128,6 +143,10 @@ cleanup() {
 # Returns curl's exit status, also left in rest_exit, and sets rest_status to
 # the HTTP status, or to 000 when no answer came. curl runs in the background
 # so that a trapped signal interrupts the wait instead of queueing behind it.
+# curl's error text for every request is appended to one file, curl-errors.log.
+# A run that passes leaves refusals there: the probe of each node's port before
+# its start is meant to be refused, and so is each readiness poll before the
+# node listens. The text a failure refers to is at the end of the file.
 rest() {
 	rest_out=$1
 	rest_max=$2
@@ -150,12 +169,13 @@ rest() {
 # rest_ok STEP OUT_FILE MAX_SECONDS CURL_ARGUMENT...: a request that must be
 # answered with HTTP 200, or the run fails at STEP.
 rest_ok() {
-	rest_step=$1
+	rest_ok_step=$1
+	rest_ok_out=$2
 	shift
 	rest "$@" ||
-		fail "$rest_step" "request failed (curl exit $rest_exit, HTTP $rest_status); see $scratch/curl-errors.log"
+		fail "$rest_ok_step" "request failed (curl exit $rest_exit, HTTP $rest_status); see $scratch/curl-errors.log"
 	[ "$rest_status" = 200 ] ||
-		fail "$rest_step" "node answered HTTP $rest_status; see $rest_out"
+		fail "$rest_ok_step" "node answered HTTP $rest_status; see $rest_ok_out"
 }
 
 # --- nodes -------------------------------------------------------------------
@@ -180,6 +200,9 @@ launch_node() {
 	launch_bootstrap_option=$4
 	launch_dir=$scratch/$launch_name
 
+	# The umask already gives the data directory mode 700; -m states it so
+	# that it does not rest on the umask line. The node does not refuse a
+	# looser directory: it logs a warning and tightens the mode itself.
 	if ! mkdir "$launch_dir" || ! mkdir -m 700 "$launch_dir/data"; then
 		fail "$launch_name start" "cannot create $launch_dir/data"
 	fi
@@ -206,8 +229,8 @@ wait_until_ready() {
 	ready_api_port=$3
 	ready_dir=$scratch/$ready_name
 
-	attempts=0
-	while [ "$attempts" -lt "$START_ATTEMPTS" ]; do
+	ready_attempts=0
+	while [ "$ready_attempts" -lt "$START_ATTEMPTS" ]; do
 		kill -0 "$ready_pid" 2>/dev/null ||
 			fail "$ready_name start" "the $ready_name node exited before accepting REST requests; see $ready_dir/node.log"
 		if rest "$ready_dir/spr" "$PROBE_TIMEOUT" --header 'Accept: text/plain' \
@@ -216,9 +239,9 @@ wait_until_ready() {
 			return 0
 		fi
 		sleep "$POLL_INTERVAL"
-		attempts=$((attempts + 1))
+		ready_attempts=$((ready_attempts + 1))
 	done
-	fail "$ready_name start" "the $ready_name node was not ready after $attempts attempts, which is at most $((START_ATTEMPTS * (PROBE_TIMEOUT + POLL_INTERVAL))) seconds; see $ready_dir/node.log"
+	fail "$ready_name start" "the $ready_name node was not ready after $ready_attempts attempts, which is at most $((START_ATTEMPTS * (PROBE_TIMEOUT + POLL_INTERVAL))) seconds; see $ready_dir/node.log"
 }
 
 # start_node NAME API_PORT LISTEN_PORT BOOTSTRAP_OPTION: one node, from a
@@ -272,8 +295,13 @@ require_tools() {
 	else
 		fail tools "no sha256 tool: neither sha256sum nor shasum is available"
 	fi
-	for tool in curl awk sed cmp wc mktemp; do
-		command -v "$tool" >/dev/null 2>&1 || fail tools "$tool is not available"
+	# Not every command the check runs. curl and mktemp are, with the sha256
+	# tool above, the tools outside POSIX; awk, sed, cmp and wc are POSIX and
+	# checked all the same. cat, sleep, mkdir and env are run without a check
+	# here, and a PATH that lacks one fails at the step that needs it.
+	for required_tool in curl awk sed cmp wc mktemp; do
+		command -v "$required_tool" >/dev/null 2>&1 ||
+			fail tools "$required_tool is not available"
 	done
 }
 
@@ -330,6 +358,8 @@ write_payload() {
 		'BEGIN { for (i = 0; i < lines; i++) printf "%07d storage-round-trip payload\n", i }' \
 		>"$payload" || fail "test content" "cannot write $payload"
 	payload_size=$(wc -c <"$payload")
+	# Not a no-op: BSD wc pads the count with spaces, which the arithmetic
+	# drops. The tests below and the diagnostic need the bare number.
 	payload_size=$((payload_size + 0))
 	[ "$payload_size" -gt "$PINNED_BLOCK_SIZE" ] &&
 		[ $((payload_size % PINNED_BLOCK_SIZE)) -ne 0 ] ||
@@ -373,17 +403,20 @@ read_publisher_spr() {
 # check_manifest CID: fails unless the publisher's manifest for CID reports
 # the three pinned values.
 check_manifest() {
-	manifest=$scratch/manifest.json
-	rest_ok manifest "$manifest" "$REQUEST_TIMEOUT" \
+	manifest_file=$scratch/manifest.json
+	rest_ok manifest "$manifest_file" "$REQUEST_TIMEOUT" \
 		"http://127.0.0.1:$PUBLISHER_API_PORT/api/storage/v1/data/$1/network/manifest"
+	# sed, not jq: jq is not on a stock desktop. The patterns assume what the
+	# node sends, one line of JSON in which each of the three keys appears
+	# once. Anything else yields no value or a wrong one, and both fail below.
 	reported_block_size=$(sed -n \
-		's/.*"blockSize"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$manifest")
+		's/.*"blockSize"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$manifest_file")
 	reported_filename=$(sed -n \
-		's/.*"filename"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$manifest")
+		's/.*"filename"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$manifest_file")
 	reported_mimetype=$(sed -n \
-		's/.*"mimetype"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$manifest")
+		's/.*"mimetype"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$manifest_file")
 	[ -n "$reported_block_size" ] ||
-		fail manifest "cannot parse the manifest; see $manifest"
+		fail manifest "cannot parse the manifest; see $manifest_file"
 	[ "$reported_block_size" = "$PINNED_BLOCK_SIZE" ] ||
 		fail manifest "expected block size $PINNED_BLOCK_SIZE, the manifest reports $reported_block_size"
 	[ "$reported_filename" = "$PINNED_FILENAME" ] ||
@@ -442,25 +475,30 @@ main() {
 	start_node publisher "$PUBLISHER_API_PORT" "$PUBLISHER_LISTEN_PORT" --no-bootstrap-node
 	read_publisher_spr
 	upload upload "$PUBLISHER_API_PORT" "$PINNED_FILENAME" "$PINNED_BLOCK_SIZE"
-	cid=$uploaded_cid
-	note "recorded CID $cid"
-	check_manifest "$cid"
+	# Copied because every later upload overwrites uploaded_cid: this is the
+	# CID the reproducer's answers are compared with.
+	recorded_cid=$uploaded_cid
+	note "recorded CID $recorded_cid"
+	check_manifest "$recorded_cid"
 
 	start_node fetcher "$FETCHER_API_PORT" "$FETCHER_LISTEN_PORT" "--bootstrap-node=$publisher_spr"
 	fetcher_pid=$last_started_pid
 	fetched=$scratch/fetched.bin
-	fetch "$cid" "$fetched"
+	fetch "$recorded_cid" "$fetched"
+	# The fetcher is stopped here, not left to cleanup: it holds the content
+	# now, and must be gone before the reproducer starts, so that no node but
+	# the publisher holds it while the CID is reproduced.
 	stop_node "$fetcher_pid"
 	verify_fetched "$fetched" "$payload" "$payload_sha256"
 
 	# The reproducer has no bootstrap node, so it cannot have obtained the
 	# content from the publisher: an equal CID comes from the bytes alone.
 	start_node reproducer "$REPRODUCER_API_PORT" "$REPRODUCER_LISTEN_PORT" --no-bootstrap-node
-	check_cid_reproduces "$cid"
-	check_cid_changes "$cid"
+	check_cid_reproduces "$recorded_cid"
+	check_cid_changes "$recorded_cid"
 
 	printf 'cid=%s\nfilename=%s\nblock_size=%s\nmimetype=%s\nsha256=%s\n' \
-		"$cid" "$PINNED_FILENAME" "$PINNED_BLOCK_SIZE" "$PINNED_MIMETYPE" "$payload_sha256"
+		"$recorded_cid" "$PINNED_FILENAME" "$PINNED_BLOCK_SIZE" "$PINNED_MIMETYPE" "$payload_sha256"
 }
 
 main "$@"

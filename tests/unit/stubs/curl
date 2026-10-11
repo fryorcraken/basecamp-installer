@@ -172,6 +172,7 @@ case $path in
 	cid=z$(printf '%s|%s|%s|%s' "$cid_filename" "$cid_block_size" "$content_type" "$cid_salt" |
 		cksum | tr -d ' ')c$(cksum <"$upload_file" | tr -d ' ')
 	cp "$upload_file" "$state/content-$cid"
+	# BSD wc pads the count with spaces; the "+ 0" below drops them.
 	size=$(wc -c <"$upload_file")
 	printf '{"cid":"%s","manifest":{"manifestVersion":0,"treeCid":"zTree","blockSize":%s,"datasetSize":%s,"filename":"%s","mimetype":"%s"}}' \
 		"$cid" "$block_size" "$((size + 0))" "$filename" "$content_type" >"$state/manifest-$role-$cid"
