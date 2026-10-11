@@ -18,10 +18,18 @@
 #                           port no stub node listens on
 #   foreign-after-publisher the same, but only once the publisher listens, so
 #                           the publisher's own start is not refused
+#   foreign-after-fetch     the same, but only once the fetcher has served its
+#                           download: the next node's port, the reproducer's
+#   foreign-status          holds the HTTP status the foreign server answers
+#                           with (default 200)
 #   spr-body-ROLE           holds the body this node answers /spr with, in
 #                           place of a well-formed peer record
 #   upload-status-ROLE      holds the HTTP status an upload is refused with
 #   upload-empty-ROLE       an upload answers 200 with an empty body
+#   upload-body-ROLE-N      the Nth upload to this node (from 1) answers 200
+#                           with this body in place of its CID
+#   upload-newlines-ROLE    this node's uploads answer with the CID followed by
+#                           two newlines
 #   cid-salt-ROLE           this node's CIDs differ from every other node's
 #   cid-ignores-filename    the filename does not affect the CID
 #   cid-ignores-block-size  the block size does not affect the CID
@@ -31,6 +39,13 @@
 #   fetch-corrupt           the download changes one byte, same length
 #   fetch-truncate          the download is a prefix, reported as complete
 #   fetch-partial           the download is a prefix and curl exits 18
+#   fetch-hangs             the download request never ends: this stub keeps a
+#                           file request-running while it lives, and removes it
+#                           when it is sent SIGTERM
+#
+# Also logged: $STUB_STATE/requests-while-fetcher-up holds the URL of every
+# request made while the stub fetcher node listens, so a test can see that the
+# fetcher had been stopped by the time a later node was contacted.
 
 set -u
 state=${STUB_STATE:?STUB_STATE is not set}
@@ -83,6 +98,7 @@ method=GET
 [ -n "$upload_file" ] && method=POST
 printf '%s %s%s\n' "$method" "$url" "$header_log" >>"$state/requests"
 printf '%s first=%s noproxy=%s max-time=%s\n' "$url" "$first_argument" "$noproxy" "$max_time" >>"$state/curl-calls"
+[ -f "$state/listening-fetcher" ] && printf '%s\n' "$url" >>"$state/requests-while-fetcher-up"
 
 # reply STATUS [EXIT]: what --write-out '%{http_code}' prints, then curl's exit.
 reply() {
@@ -106,15 +122,25 @@ esac
 role=
 [ -f "$state/role-$port" ] && role=$(cat "$state/role-$port")
 if [ -z "$role" ] || [ ! -f "$state/listening-$role" ]; then
+	# A server that is not a node answers whatever the HTTP status: a real one
+	# may well answer 404 or 401 on "/".
+	foreign_status=200
+	[ -f "$state/foreign-status" ] && foreign_status=$(cat "$state/foreign-status")
 	if [ -f "$state/foreign-everywhere" ]; then
 		echo "not a storage node" >"$out"
-		reply 200
+		reply "$foreign_status"
 	fi
 	# A server on a port no node has been given yet, from the moment the
 	# publisher listens: the next node's port, probed before that node starts.
 	if [ -f "$state/foreign-after-publisher" ] && [ -f "$state/listening-publisher" ]; then
 		echo "not a storage node" >"$out"
-		reply 200
+		reply "$foreign_status"
+	fi
+	# The same, from the moment the fetcher has served its download: the port of
+	# the node after it. The fetcher's own port is never asked about again.
+	if [ -f "$state/foreign-after-fetch" ] && [ -f "$state/fetched-by" ]; then
+		echo "not a storage node" >"$out"
+		reply "$foreign_status"
 	fi
 	echo "stub curl: connection refused on port $port" >&2
 	reply 000 7
@@ -149,9 +175,16 @@ case $path in
 	size=$(wc -c <"$upload_file")
 	printf '{"cid":"%s","manifest":{"manifestVersion":0,"treeCid":"zTree","blockSize":%s,"datasetSize":%s,"filename":"%s","mimetype":"%s"}}' \
 		"$cid" "$block_size" "$((size + 0))" "$filename" "$content_type" >"$state/manifest-$role-$cid"
+	prior_uploads=0
+	[ -f "$state/uploads" ] && prior_uploads=$(grep -c "^$role " "$state/uploads")
+	upload_ordinal=$((prior_uploads + 1))
 	printf '%s %s %s %s %s\n' "$role" "$cid" "$filename" "$block_size" "$content_type" >>"$state/uploads"
 	if [ -f "$state/upload-empty-$role" ]; then
 		: >"$out"
+	elif [ -f "$state/upload-body-$role-$upload_ordinal" ]; then
+		cat "$state/upload-body-$role-$upload_ordinal" >"$out"
+	elif [ -f "$state/upload-newlines-$role" ]; then
+		printf '%s\n\n' "$cid" >"$out"
 	else
 		printf '%s' "$cid" >"$out"
 	fi
@@ -178,6 +211,17 @@ case $path in
 	if [ -f "$state/fetch-status" ]; then
 		echo "download refused" >"$out"
 		reply "$(cat "$state/fetch-status")"
+	fi
+	if [ -f "$state/fetch-hangs" ]; then
+		# A request still in flight: stays until it is sent SIGTERM, or for 30
+		# seconds, and leaves a witness file for as long as it lives.
+		: >"$state/request-running"
+		trap 'rm -f "$state/request-running"; kill "$sleeper" 2>/dev/null; exit 0' TERM
+		"${STUB_REAL_SLEEP:-sleep}" 30 &
+		sleeper=$!
+		wait "$sleeper"
+		rm -f "$state/request-running"
+		reply 000 28
 	fi
 	# The content comes from another node that holds it and is still running.
 	provider=

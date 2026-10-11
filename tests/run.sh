@@ -35,6 +35,7 @@ tests_run=0
 failures=0
 test_name=
 check_tmpdir=
+check_tmpdir_unset=0
 
 # begin NAME: a fresh state directory for the stubs and a fresh scratch parent.
 begin() {
@@ -45,6 +46,7 @@ begin() {
 	mkdir -p "$state" "$work/scratch"
 	check_path=$stubs:$PATH
 	check_tmpdir=
+	check_tmpdir_unset=0
 	test_failed=0
 }
 
@@ -66,14 +68,23 @@ run_check() {
 	scratch=$(sed -n 's/^storage-round-trip: scratch directory: //p' "$work/stderr")
 }
 
-# run_check_bare ARGUMENT...: like run_check, but states no scratch parent, and
-# gives the check the TMPDIR named by check_tmpdir (empty: none at all).
+# run_check_bare ARGUMENT...: like run_check, but states no scratch parent of its
+# own, and gives the check the TMPDIR named by check_tmpdir: set, and empty when
+# check_tmpdir is empty, or not set at all when check_tmpdir_unset is 1.
 run_check_bare() {
-	# shellcheck disable=SC2086
-	PATH=$check_path STUB_STATE=$state STUB_REAL_SLEEP=$real_sleep \
-		STUB_REAL_SHA256=$real_sha256 TMPDIR=$check_tmpdir \
-		$shell_under_test "$check" "$@" \
-		>"$work/stdout" 2>"$work/stderr"
+	(
+		if [ "$check_tmpdir_unset" -eq 1 ]; then
+			unset TMPDIR
+		else
+			TMPDIR=$check_tmpdir
+			export TMPDIR
+		fi
+		# shellcheck disable=SC2086
+		PATH=$check_path STUB_STATE=$state STUB_REAL_SLEEP=$real_sleep \
+			STUB_REAL_SHA256=$real_sha256 \
+			$shell_under_test "$check" "$@" \
+			>"$work/stdout" 2>"$work/stderr"
+	)
 	status=$?
 	scratch=$(sed -n 's/^storage-round-trip: scratch directory: //p' "$work/stderr")
 }
@@ -91,8 +102,14 @@ make_toolbox() {
 	ln -s "$stubs/curl" "$1/curl"
 }
 
+# flunk MESSAGE...: the current test has failed. Its name is also appended to
+# failed-tests in the suite directory, which is kept after a failure, so the
+# names of the failing tests can be read from a file as well as from the output.
 flunk() {
-	[ "$test_failed" -eq 0 ] && failures=$((failures + 1))
+	if [ "$test_failed" -eq 0 ]; then
+		failures=$((failures + 1))
+		printf '%s\n' "$test_name" >>"$suite_dir/failed-tests"
+	fi
 	test_failed=1
 	printf 'FAIL %s: %s\n' "$test_name" "$*"
 }

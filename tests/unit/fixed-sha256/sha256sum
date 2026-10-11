@@ -1,0 +1,27 @@
+#!/bin/sh
+# A sha256 tool that ignores its input, for the storage-round-trip unit tests.
+# It prints one fixed, well-formed digest for every call, so the check can be
+# shown comparing the fetched bytes as well as the digests: with equal digests
+# only the byte comparison can tell two files apart, and with the knob file
+# $STUB_STATE/sha-second-differs the second call prints another digest while
+# the bytes stay equal, so only the digest comparison can fail the run.
+#
+# NO SPEC: the second call is the one on the fetched content, because the check
+# hashes its test content first and the fetched content next. The spec fixes
+# only that the test content is hashed before it is uploaded.
+
+set -u
+state=${STUB_STATE:?STUB_STATE is not set}
+
+calls=0
+[ -f "$state/sha-calls" ] && calls=$(cat "$state/sha-calls")
+calls=$((calls + 1))
+printf '%s\n' "$calls" >"$state/sha-calls"
+
+cat >/dev/null
+
+digest=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+if [ "$calls" -ge 2 ] && [ -f "$state/sha-second-differs" ]; then
+	digest=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+fi
+printf '%s  -\n' "$digest"

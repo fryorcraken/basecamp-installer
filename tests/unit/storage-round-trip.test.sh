@@ -187,9 +187,11 @@ assert_line_count "$state/invocations" 3
 sed -n 1p "$state/invocations" >"$work/publisher-args"
 sed -n 2p "$state/invocations" >"$work/fetcher-args"
 sed -n 3p "$state/invocations" >"$work/reproducer-args"
+# "--bootstrap-node" alone, without the "=": a bootstrap node given as a separate
+# argument is still a bootstrap node. "--no-bootstrap-node" does not contain it.
 for unbootstrapped in publisher reproducer; do
 	assert_contains "$work/$unbootstrapped-args" "--no-bootstrap-node"
-	assert_lacks "$work/$unbootstrapped-args" "--bootstrap-node="
+	assert_lacks "$work/$unbootstrapped-args" "--bootstrap-node"
 done
 assert_lacks "$work/fetcher-args" "--no-bootstrap-node"
 for node in publisher fetcher reproducer; do
@@ -208,6 +210,30 @@ assert_lacks "$state/invocations" "--network"
 assert_lacks "$state/requests" "OFF-HOST"
 grep -v ' http://127\.0\.0\.1:' "$state/requests" >"$work/off-host-requests"
 assert_line_count "$work/off-host-requests" 0
+end
+
+# Requirement "An option's value is joined to its option". The stub CLI writes
+# its arguments one to a line, so a value passed on its own is a line of its own.
+begin "every valued option is one --name=value argument"
+run_check "$stub_cli"
+assert_status_zero
+for node in publisher fetcher reproducer; do
+	for option in data-dir api-port listen-port listen-ip api-bindaddr nat; do
+		grep "^--$option=." "$state/args-$node" >"$work/option-lines"
+		assert_line_count "$work/option-lines" 1
+		if grep -x -- "--$option" "$state/args-$node" >/dev/null; then
+			flunk "the $node has --$option as an argument of its own"
+		fi
+	done
+	# Every argument is an option; a value that stood alone would not be.
+	grep -v '^--' "$state/args-$node" >"$work/bare-arguments"
+	assert_line_count "$work/bare-arguments" 0
+done
+grep '^--bootstrap-node=.' "$state/args-fetcher" >"$work/option-lines"
+assert_line_count "$work/option-lines" 1
+if grep -x -- "--bootstrap-node" "$state/args-fetcher" >/dev/null; then
+	flunk "the fetcher has --bootstrap-node as an argument of its own"
+fi
 end
 
 # Requirement "A node's REST API is bound to localhost", and scenario "No
@@ -238,9 +264,10 @@ for node in publisher fetcher reproducer; do
 done
 end
 
-# NO SPEC: the spec does not say what happens when a STORAGE_ variable cannot
-# be removed. The check reads names from env, which cannot tell a variable from
-# a line inside another variable's value, so this refuses to start any node.
+# Requirement "A storage variable that cannot be removed stops the run", scenario
+# "A value holds a line that begins with STORAGE_". The check reads names from
+# env, which cannot tell a variable from a line inside another variable's value,
+# so it refuses to start any node.
 begin "a STORAGE_ line the check cannot remove from the environment stops the run"
 UNRELATED_SETTING='first line
 STORAGE_FORGED=1'
@@ -251,6 +278,23 @@ assert_failed_at environment
 assert_contains "$work/stderr" "STORAGE_FORGED"
 assert_line_count "$state/invocations" 0
 assert_no_scratch_made
+end
+
+# Scenario "Storage variable whose name is not a shell identifier": the shell
+# cannot unset it, and some shells drop it before the check runs. The spec leaves
+# open whether the run is refused or carries on, so the assertion is on the
+# nodes only: any that was started must not hold the variable. The variable is
+# given to the check through env, because no shell assigns such a name.
+begin "a STORAGE_ variable whose name is not a shell identifier reaches no node"
+saved_shell=$shell_under_test
+shell_under_test="env STORAGE_BAD-NAME=1 $shell_under_test"
+run_check "$stub_cli"
+shell_under_test=$saved_shell
+for node in publisher fetcher reproducer; do
+	if [ -f "$state/environment-$node" ]; then
+		assert_lacks "$state/environment-$node" "STORAGE_BAD-NAME"
+	fi
+done
 end
 
 begin "ports are stated, distinct and not reserved"
@@ -360,6 +404,21 @@ grep -F '[Content-Type: application/octet-stream]' "$work/upload-requests" >"$wo
 assert_line_count "$work/typed-uploads" 4
 end
 
+# Requirement "A full pass makes four uploads". The ports are the REST ports the
+# check gave the nodes, read from the invocations the stub recorded; the order
+# of the upload requests is read from the request log.
+begin "a full pass makes four uploads, one to the publisher and three to the reproducer"
+run_check "$stub_cli"
+assert_status_zero
+publisher_port=$(sed -n 1p "$state/invocations" | tr ' ' '\n' | sed -n 's/^--api-port=//p')
+reproducer_port=$(sed -n 3p "$state/invocations" | tr ' ' '\n' | sed -n 's/^--api-port=//p')
+sed -n 's|^POST http://127\.0\.0\.1:\([0-9]*\)/.*|\1|p' "$state/requests" >"$work/upload-ports"
+printf '%s\n%s\n%s\n%s\n' "$publisher_port" "$reproducer_port" "$reproducer_port" "$reproducer_port" \
+	>"$work/expected-upload-ports"
+cmp -s "$work/expected-upload-ports" "$work/upload-ports" ||
+	flunk "the uploads went to ports: $(cat "$work/upload-ports"); expected: $(cat "$work/expected-upload-ports")"
+end
+
 begin "the fetcher starts empty, fetches by CID without advertising, and is stopped"
 run_check "$stub_cli"
 assert_status_zero
@@ -374,6 +433,32 @@ upload_line=$(grep -n 'POST ' "$state/requests" | sed -n '1s/:.*//p')
 fetcher_port=$(sed -n 2p "$state/invocations" | tr ' ' '\n' | sed -n 's/^--api-port=//p')
 fetcher_line=$(grep -n "127\.0\.0\.1:$fetcher_port/" "$state/requests" | sed -n '1s/:.*//p')
 [ "$upload_line" -lt "$fetcher_line" ] || flunk "the fetcher was contacted before the upload"
+# The stop: "once the fetch has ended" is before the reproducer is contacted, not
+# at exit, where the check's cleanup would stop a fetcher it had left running.
+# The stub curl logged every request made while the stub fetcher still listened.
+reproducer_port=$(sed -n 3p "$state/invocations" | tr ' ' '\n' | sed -n 's/^--api-port=//p')
+grep -F "127.0.0.1:$fetcher_port/" "$state/requests-while-fetcher-up" >"$work/while-up-fetcher"
+[ -s "$work/while-up-fetcher" ] || flunk "the stub logged no request to the fetcher while it listened"
+grep -F "127.0.0.1:$reproducer_port/" "$state/requests-while-fetcher-up" >"$work/while-up-reproducer"
+assert_line_count "$work/while-up-reproducer" 0
+end
+
+# Requirement "The fetcher is ephemeral and does not advertise", scenario
+# "Fetcher starts empty": the stub writes into its data directory as it starts,
+# so a data directory that another node already used is not empty at start, and
+# three nodes cannot share one.
+begin "each node is given a data directory of its own"
+run_check "$stub_cli"
+assert_status_zero
+for node in publisher fetcher reproducer; do
+	sed -n 's/^--data-dir=//p' "$state/args-$node" >>"$work/data-dirs"
+done
+assert_line_count "$work/data-dirs" 3
+[ -z "$(sort "$work/data-dirs" | uniq -d)" ] ||
+	flunk "two nodes share a data directory: $(cat "$work/data-dirs")"
+for node in publisher fetcher reproducer; do
+	assert_empty_file "$state/data-dir-at-start-$node"
+done
 end
 
 begin "the reproduction node starts empty and never fetched"
@@ -417,8 +502,9 @@ attempts=$(grep -c '/api/storage/v1/spr' "$state/requests")
 assert_contains "$work/stderr" "not ready after $attempts attempts"
 end
 
-# NO SPEC: the spec has no scenario for a peer record that is not one. The
-# check refuses it at the publisher, before any fetcher is started on it.
+# Requirement "The publisher's peer record is checked before it is used". The
+# check refuses a record that is not one at the publisher, before any fetcher is
+# started on it: the storage CLI has been invoked once only.
 begin "a publisher answer that is not a peer record is refused"
 knob spr-body-publisher '<html>not a peer record</html>'
 run_check "$stub_cli"
@@ -431,7 +517,33 @@ begin "a peer record with no body is refused"
 knob spr-body-publisher 'spr:'
 run_check "$stub_cli"
 assert_failed_at "publisher start"
+assert_contains "$work/stderr" "peer record"
 assert_line_count "$state/invocations" 1
+end
+
+# refuse_peer_record LABEL BODY: the publisher answers the peer record request
+# with BODY, and the run stops before the fetcher.
+refuse_peer_record() {
+	begin "a peer record $1 is refused"
+	knob spr-body-publisher "$2"
+	run_check "$stub_cli"
+	assert_failed_at "publisher start"
+	assert_line_count "$state/invocations" 1
+	end
+}
+
+refuse_peer_record "with a space" 'spr:abc def'
+refuse_peer_record "with a comma" 'spr:abc,def'
+refuse_peer_record "with a slash" 'spr:abc/def'
+refuse_peer_record "without the spr: prefix" 'STUB-publisher'
+
+# The accepted set is the letters, the digits, "-", "_" and "=": a record that
+# uses all of them reaches the fetcher unchanged, so the check is no tighter.
+begin "a peer record of every accepted character class is passed to the fetcher"
+knob spr-body-publisher 'spr:AZaz09-_='
+run_check "$stub_cli"
+assert_status_zero
+assert_contains "$state/args-fetcher" '--bootstrap-node=spr:AZaz09-_='
 end
 
 # --- A REST port that already answers is refused -----------------------------
@@ -470,6 +582,41 @@ probed_port=$(sed -n '$s|^GET http://127\.0\.0\.1:\([0-9]*\)/.*|\1|p' "$state/re
 assert_contains "$work/stderr" "127.0.0.1:$probed_port"
 end
 
+# "Before starting a node" holds for every node: the reproducer is the third.
+# The fetcher has served its download and been stopped when the check asks about
+# the reproducer's port, and a server is answering there.
+begin "a foreign server on the reproducer's REST port is refused"
+knob foreign-after-fetch
+run_check "$stub_cli"
+assert_failed_at "reproducer start"
+assert_contains "$work/stderr" "already answers"
+assert_contains "$work/stderr" "reproducer"
+# Only the publisher and the fetcher were started.
+assert_line_count "$state/invocations" 2
+tr ' ' '\n' <"$state/invocations" | sed -n 's/^--api-port=//p' >"$work/started-ports"
+probed_port=$(sed -n '$s|^GET http://127\.0\.0\.1:\([0-9]*\)/.*|\1|p' "$state/requests")
+[ -n "$probed_port" ] || flunk "the last request was not a probe of a port"
+if grep -x -F -- "$probed_port" "$work/started-ports" >/dev/null; then
+	flunk "the refused port $probed_port is one a started node was given: $(cat "$work/started-ports")"
+fi
+assert_contains "$work/stderr" "127.0.0.1:$probed_port"
+end
+
+# "Whatever the HTTP status of its answer": a foreign server more often answers
+# 404 or 401 on "/" than 200. The stub CLI exits at once, so only the refusal
+# can leave no invocation.
+for foreign_http_status in 404 401; do
+	begin "a foreign server answering HTTP $foreign_http_status on the publisher's REST port is refused"
+	knob foreign-everywhere
+	knob foreign-status "$foreign_http_status"
+	knob exit-at-start-publisher
+	run_check "$stub_cli"
+	assert_failed_at "publisher start"
+	assert_contains "$work/stderr" "already answers"
+	assert_line_count "$state/invocations" 0
+	end
+done
+
 # --- Content is published under the pinned values ----------------------------
 
 begin "upload is refused"
@@ -482,6 +629,54 @@ begin "upload returns no CID"
 knob upload-empty-publisher
 run_check "$stub_cli"
 assert_failed_at upload
+end
+
+# Requirement "A returned CID is checked before it is used": the answer is
+# letters and digits only, apart from trailing newlines. The stub returns only
+# well-formed CIDs otherwise, so each answer here is what a node would have to
+# send to get past a check that looked no further than "not empty".
+
+# refuse_publisher_cid LABEL BODY: the publisher answers the upload with BODY.
+refuse_publisher_cid() {
+	begin "a publisher upload answer $1 is not a CID"
+	knob upload-body-publisher-1 "$2"
+	run_check "$stub_cli"
+	assert_failed_at upload
+	assert_lacks "$state/requests" "/network/manifest"
+	assert_line_count "$state/invocations" 1
+	end
+}
+
+refuse_publisher_cid "with a slash" 'abc/../x'
+refuse_publisher_cid "with a second line" 'abc
+sha256=00'
+refuse_publisher_cid "with a space" 'abc def'
+refuse_publisher_cid "with a dot" 'abc.def'
+refuse_publisher_cid "with a hyphen" 'abc-def'
+
+# refuse_reproducer_cid N STEP LABEL BODY: the reproducer answers its Nth upload
+# with BODY, and the run fails at STEP.
+refuse_reproducer_cid() {
+	begin "a reproducer upload answer $3 is not a CID"
+	knob "upload-body-reproducer-$1" "$4"
+	run_check "$stub_cli"
+	assert_failed_at "$2"
+	end
+}
+
+refuse_reproducer_cid 1 re-upload "with a slash" 'abc/def'
+refuse_reproducer_cid 1 re-upload "with a second line" 'abc
+def'
+refuse_reproducer_cid 3 "changed block size upload" "with a space" 'abc def'
+
+# "Apart from trailing newlines": a node that ends its answer with newlines is
+# not refused, and the newlines are not part of the CID the check prints.
+begin "a CID followed by newlines is a CID"
+knob upload-newlines-publisher
+knob upload-newlines-reproducer
+run_check "$stub_cli"
+assert_status_zero
+assert_result_lines
 end
 
 # --- The manifest carries the pinned values ----------------------------------
@@ -591,6 +786,42 @@ run_check "$stub_cli"
 assert_failed_at verification
 end
 
+# The two comparisons told apart. The fixed tool prints one digest for every
+# input, and its second call another when asked; "fetched content differs" above
+# fails both comparisons at once, so on its own it passes with either removed.
+# The expected digests are the constants in tests/unit/fixed-sha256/sha256sum.
+begin "equal digests do not hide a fetched content that differs"
+knob fetch-corrupt
+check_path=$tests_dir/unit/fixed-sha256:$stubs:$PATH
+run_check "$stub_cli"
+assert_failed_at verification
+assert_contains "$work/stderr" "byte-for-byte"
+cmp -s "$scratch/poc-payload.bin" "$scratch/fetched.bin" &&
+	flunk "the stub did not corrupt the download"
+end
+
+begin "identical bytes do not hide a digest that differs"
+knob sha-second-differs
+check_path=$tests_dir/unit/fixed-sha256:$stubs:$PATH
+run_check "$stub_cli"
+assert_failed_at verification
+assert_contains "$work/stderr" "sha256 mismatch: expected aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, actual bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+assert_lacks "$work/stderr" "byte-for-byte"
+cmp -s "$scratch/poc-payload.bin" "$scratch/fetched.bin" ||
+	flunk "the fetched content differs, so the digest was not the only difference"
+end
+
+# The fixed tool itself passes a run whose digests and bytes agree: the two
+# tests above fail for the reason they name and not because the tool is broken.
+begin "equal digests and identical bytes pass"
+check_path=$tests_dir/unit/fixed-sha256:$stubs:$PATH
+run_check "$stub_cli"
+assert_status_zero
+assert_contains "$work/stdout" "sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+end
+
+# NO SPEC: the broken tool breaks its second call, the one on the fetched
+# content. The spec fixes only that the test content is hashed before the upload.
 begin "sha256 tool fails on the fetched content"
 check_path=$tests_dir/unit/broken-sha256:$stubs:$PATH
 run_check "$stub_cli"
@@ -717,6 +948,25 @@ knob deaf-publisher
 interrupt_check TERM
 assert_status_nonzero
 assert_lacks "$work/stdout" "cid="
+end
+
+# A signal that arrives while a request is in flight: the fetch is the long one.
+# The check must not leave that request running after it has exited, still
+# holding its output file in the scratch directory. The stub curl keeps the file
+# request-running for as long as it lives and removes it when sent SIGTERM; the
+# test waits a few seconds for that, since the check does not wait for the
+# request it kills.
+begin "SIGTERM during a request leaves no request running"
+knob fetch-hangs
+interrupt_check TERM request-running
+assert_status_nonzero
+assert_lacks "$work/stdout" "cid="
+waited=0
+while [ -f "$state/request-running" ] && [ "$waited" -lt 5 ]; do
+	sleep 1
+	waited=$((waited + 1))
+done
+[ ! -f "$state/request-running" ] || flunk "the request is still running after the check exited"
 end
 
 # Requirement "No node outlives the run", for a signal that arrives while the
@@ -855,6 +1105,9 @@ ls -A "$work/cwd" >"$work/cwd-entries"
 assert_line_count "$work/cwd-entries" 0
 end
 
+# Scenarios "Scratch parent given" and "Option given twice": run_check states
+# $work/scratch first, so the parent named here is the second, and the first
+# must gain no entry.
 begin "a scratch parent given with --scratch-parent holds the scratch directory"
 mkdir "$work/chosen"
 run_check --scratch-parent "$work/chosen" "$stub_cli"
@@ -866,18 +1119,25 @@ case $scratch in
 esac
 ls -A "$work/chosen" >"$work/chosen-entries"
 assert_line_count "$work/chosen-entries" 1
+assert_no_scratch_made
 assert_line_count "$state/invocations" 3
 end
 
+# A relative parent that is not the one run_check stated first: a check that kept
+# the first parent, or looked the relative one up somewhere else, makes its
+# directory elsewhere.
 begin "a relative scratch parent gives an absolute scratch directory"
+mkdir "$work/relative-parent"
 cd "$work" || exit 2
-run_check --scratch-parent scratch "$stub_cli"
+run_check --scratch-parent relative-parent "$stub_cli"
 cd "$repo" || exit 2
 assert_status_zero
 case $scratch in
-"$work/scratch"/*) ;;
-*) flunk "the scratch directory '$scratch' is not the absolute path of a child of $work/scratch" ;;
+"$work/relative-parent"/*/*) flunk "the scratch directory '$scratch' is not a direct child of $work/relative-parent" ;;
+"$work/relative-parent"/*) ;;
+*) flunk "the scratch directory '$scratch' is not the absolute path of a child of $work/relative-parent" ;;
 esac
+assert_no_scratch_made
 end
 
 begin "the scratch parent comes from TMPDIR when none is given"
@@ -890,6 +1150,116 @@ case $scratch in
 *) flunk "the scratch directory '$scratch' is not under TMPDIR $work/from-env" ;;
 esac
 end
+
+begin "--scratch-parent beats TMPDIR"
+mkdir "$work/from-env" "$work/chosen"
+check_tmpdir=$work/from-env
+run_check_bare --scratch-parent "$work/chosen" "$stub_cli"
+assert_status_zero
+case $scratch in
+"$work/chosen"/*) ;;
+*) flunk "the scratch directory '$scratch' is not under --scratch-parent $work/chosen" ;;
+esac
+ls -A "$work/from-env" >"$work/from-env-entries"
+assert_line_count "$work/from-env-entries" 0
+end
+
+# make_mktemp_shim DIR FAKE_TMP: a mktemp that records the template it is given
+# in $STUB_STATE/mktemp-templates and makes the directory under FAKE_TMP in place
+# of /tmp, so a test sees where the check asked for its scratch directory
+# without anything being written to /tmp.
+make_mktemp_shim() {
+	shim_dir=$1
+	fake_tmp=$2
+	real_mktemp=$(command -v mktemp)
+	mkdir "$shim_dir" "$fake_tmp"
+	printf '%s\n' '#!/bin/sh' \
+		'[ "$#" -eq 2 ] && [ "$1" = -d ] || { echo "mktemp shim: unexpected arguments: $*" >&2; exit 2; }' \
+		'printf "%s\n" "$2" >>"$STUB_STATE/mktemp-templates"' \
+		'case $2 in' \
+		"/tmp/*) set -- -d \"$fake_tmp/\${2#/tmp/}\" ;;" \
+		'esac' \
+		"exec $real_mktemp \"\$@\"" >"$shim_dir/mktemp"
+	chmod +x "$shim_dir/mktemp"
+}
+
+# The check asked mktemp once, for a directory directly under /tmp.
+assert_scratch_asked_under_tmp() {
+	assert_line_count "$state/mktemp-templates" 1
+	asked_template=$(sed -n 1p "$state/mktemp-templates")
+	case $asked_template in
+	/tmp/*/*) flunk "the check asked mktemp for '$asked_template', which is not directly under /tmp" ;;
+	/tmp/*) ;;
+	*) flunk "the check asked mktemp for '$asked_template', which is not under /tmp" ;;
+	esac
+	case $scratch in
+	"$work/fake-tmp"/*) ;;
+	*) flunk "the scratch directory '$scratch' did not come from the mktemp shim" ;;
+	esac
+}
+
+# Scenarios "TMPDIR is not set" and "TMPDIR is empty". The run starts in an
+# empty directory, so a check that fell back to the current directory leaves it
+# a scratch directory.
+begin "the scratch directory is under /tmp when TMPDIR is not set"
+make_mktemp_shim "$work/shim" "$work/fake-tmp"
+check_path=$work/shim:$stubs:$PATH
+check_tmpdir_unset=1
+mkdir "$work/cwd"
+cd "$work/cwd" || exit 2
+run_check_bare "$stub_cli"
+cd "$repo" || exit 2
+assert_status_zero
+assert_scratch_asked_under_tmp
+ls -A "$work/cwd" >"$work/cwd-entries"
+assert_line_count "$work/cwd-entries" 0
+end
+
+begin "the scratch directory is under /tmp when TMPDIR is empty"
+make_mktemp_shim "$work/shim" "$work/fake-tmp"
+check_path=$work/shim:$stubs:$PATH
+check_tmpdir=
+mkdir "$work/cwd"
+cd "$work/cwd" || exit 2
+run_check_bare "$stub_cli"
+cd "$repo" || exit 2
+assert_status_zero
+assert_scratch_asked_under_tmp
+ls -A "$work/cwd" >"$work/cwd-entries"
+assert_line_count "$work/cwd-entries" 0
+end
+
+# Requirement "The check is a POSIX sh program", scenario "Run by a POSIX shell
+# that is not bash". The whole suite runs under the shell tests/run.sh is given,
+# which is bash on a machine whose sh is bash; so that a default run still sees
+# the check under a shell that is not, a pass and a failure are run here under
+# dash and under busybox's ash, whichever of them is present and is not already
+# the shell under test. The rest of the scenario's clause, on options that exist
+# only in GNU or only in BSD tools, is not observable on one platform and is for
+# the macOS layer.
+for other_shell in dash "busybox sh"; do
+	if ! command -v "${other_shell%% *}" >/dev/null 2>&1; then
+		printf 'skip the check under %s: not installed\n' "$other_shell"
+		continue
+	fi
+	[ "$other_shell" = "$shell_under_test" ] && continue
+	saved_shell=$shell_under_test
+	shell_under_test=$other_shell
+
+	begin "a full pass under $other_shell"
+	run_check "$stub_cli"
+	assert_status_zero
+	assert_result_lines
+	end
+
+	begin "a failed run under $other_shell leaves no node behind"
+	knob upload-status-publisher 500
+	run_check "$stub_cli"
+	assert_failed_at upload
+	end
+
+	shell_under_test=$saved_shell
+done
 
 # A directory may be named "-", which cd would read as "the previous directory".
 begin "a scratch parent named - is a directory like any other"

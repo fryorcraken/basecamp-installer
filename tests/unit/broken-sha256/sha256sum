@@ -3,6 +3,10 @@
 # unit tests. The check hashes its test content first and the fetched content
 # second, so the second call is the one that verifies the download.
 #
+# NO SPEC: that order. The spec fixes only that the test content is hashed
+# before it is uploaded; how often the tool runs, and what it is run on after
+# that, is outside the capability.
+#
 # With the knob file $STUB_STATE/sha-prints-nothing the broken calls exit 0
 # and print nothing; without it they exit 1.
 

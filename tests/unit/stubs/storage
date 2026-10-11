@@ -34,6 +34,15 @@ printf '%s\n' "$role" >"$state/role-$api_port"
 printf '%s\n' "$$" >>"$state/pids"
 printf '%s\n' "$$" >"$state/pid-$role"
 ls -A "$data_dir" >"$state/data-dir-at-start-$role" 2>&1
+# Every argument on a line of its own, so a test can tell "--name=value" from
+# "--name" followed by "value", which "$*" in the invocations file cannot.
+printf '%s\n' "$@" >"$state/args-$role"
+# A real node writes into its data directory as soon as it starts, and this stub
+# writes nothing else there. Without this marker every data directory would be
+# empty whatever the check did, so a check that gave one node another node's
+# directory would still see "empty at start". A directory two nodes share holds
+# the first one's marker when the second starts.
+[ -d "$data_dir" ] && printf '%s\n' "$role" >"$data_dir/started-by-stub"
 # Every STORAGE_ variable this process was started with, one per line; an
 # empty file when there is none.
 env | grep '^STORAGE_' >"$state/environment-$role"
