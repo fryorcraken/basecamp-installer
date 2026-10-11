@@ -55,6 +55,9 @@ Also outside this capability:
 - **Whether a run is refused or carries on when a `STORAGE_` variable's name
   is not a shell identifier.** Some shells drop such a variable before the
   check sees it. What holds either way is that no node is given it.
+- **A missing POSIX utility other than `awk`, `sed`, `cmp` and `wc`.** The
+  check does not look for any other before it starts; at which step a run
+  without one ends, and with what diagnostic, is not stated.
 - **An environment variable whose name contains a newline.**
 - **How many times the sha256 tool is run, and in what order beyond the test
   content's digest being computed before the upload.**
@@ -97,6 +100,31 @@ missing tool.
 #### Scenario: mktemp is not available
 - **WHEN** `mktemp` is not available to the check
 - **THEN** it exits non-zero, starts no node, and its diagnostic names `mktemp`
+
+### Requirement: Four POSIX utilities are checked first
+The check MUST exit non-zero, before starting any node and before creating its
+scratch directory, when one of `awk`, `sed`, `cmp` and `wc` is not available,
+and its diagnostic MUST name the missing utility.
+
+#### Scenario: awk is not available
+- **WHEN** `awk` is not available to the check
+- **THEN** it exits non-zero, starts no node, creates no scratch directory, and
+  its diagnostic names `awk`
+
+#### Scenario: sed is not available
+- **WHEN** `sed` is not available to the check
+- **THEN** it exits non-zero, starts no node, creates no scratch directory, and
+  its diagnostic names `sed`
+
+#### Scenario: cmp is not available
+- **WHEN** `cmp` is not available to the check
+- **THEN** it exits non-zero, starts no node, creates no scratch directory, and
+  its diagnostic names `cmp`
+
+#### Scenario: wc is not available
+- **WHEN** `wc` is not available to the check
+- **THEN** it exits non-zero, starts no node, creates no scratch directory, and
+  its diagnostic names `wc`
 
 ### Requirement: The command line is one operand and one option
 The check MUST accept a command line of the form
