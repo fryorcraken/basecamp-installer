@@ -4,9 +4,12 @@
 # real node: only tests/integration/storage-round-trip.sh run against a built
 # storage CLI does that.
 #
-# usage: sh tests/run.sh [SHELL]
+# usage: sh tests/run.sh [SHELL [CHECK]]
 #   SHELL is the POSIX shell the check is run with (default: sh), for example
 #   "busybox sh" or dash.
+#   CHECK is the check to run the suite against (default: the tracked one), a
+#   path relative to the repository root or absolute. It exists so a test can be
+#   watched failing against a copy of the check with one behaviour broken.
 
 # stub_cli and scratch are read by the sourced test file.
 # shellcheck disable=SC2034
@@ -15,10 +18,14 @@ set -u
 
 tests_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd) || exit 2
 repo=$(dirname -- "$tests_dir")
-check=$tests_dir/integration/storage-round-trip.sh
+shell_under_test=${1:-sh}
+case ${2:-} in
+'') check=$tests_dir/integration/storage-round-trip.sh ;;
+/*) check=$2 ;;
+*) check=$repo/$2 ;;
+esac
 stubs=$tests_dir/unit/stubs
 stub_cli=$stubs/storage
-shell_under_test=${1:-sh}
 
 # Absolute paths: some tests put a fake of the same name earlier on PATH.
 real_sleep=$(command -v sleep)
@@ -55,17 +62,46 @@ knob() {
 	printf '%s\n' "${2:-}" >"$state/$1"
 }
 
+# under_stubs COMMAND...: the environment the check is run under, in one place:
+# PATH is check_path, and the stubs find their state directory and the real
+# sleep and sha256 tool. It replaces the shell it is called in with COMMAND,
+# and sets this shell's own variables first, so it is only ever called inside
+# ( ). Because COMMAND takes the subshell's place, a background
+# ( under_stubs ... ) & has COMMAND's own pid, which a signal then reaches.
+under_stubs() {
+	PATH=$check_path
+	STUB_STATE=$state
+	STUB_REAL_SLEEP=$real_sleep
+	STUB_REAL_SHA256=$real_sha256
+	export PATH STUB_STATE STUB_REAL_SLEEP STUB_REAL_SHA256
+	exec "$@"
+}
+
 # run_check ARGUMENT...: runs the check to completion; sets status, and
 # scratch to the directory it printed.
 run_check() {
 	# The shell command may be two words, as in "busybox sh".
 	# shellcheck disable=SC2086
-	PATH=$check_path STUB_STATE=$state STUB_REAL_SLEEP=$real_sleep \
-		STUB_REAL_SHA256=$real_sha256 \
-		$shell_under_test "$check" --scratch-parent "$work/scratch" "$@" \
+	(under_stubs $shell_under_test "$check" --scratch-parent "$work/scratch" "$@") \
 		>"$work/stdout" 2>"$work/stderr"
 	status=$?
 	scratch=$(sed -n 's/^storage-round-trip: scratch directory: //p' "$work/stderr")
+}
+
+# in_directory DIR COMMAND [ARGUMENT...]: runs COMMAND, which may be run_check
+# or run_check_bare, with DIR as the working directory, and returns to the
+# repository root. COMMAND runs in this shell, so what it sets is kept.
+in_directory() {
+	cd "$1" || exit 2
+	shift
+	"$@"
+	cd "$repo" || exit 2
+}
+
+# api_port_of ROLE: the REST port the check gave the publisher, fetcher or
+# reproducer, from the arguments the stub storage CLI recorded.
+api_port_of() {
+	sed -n 's/^--api-port=//p' "$state/args-$1"
 }
 
 # run_check_bare ARGUMENT...: like run_check, but states no scratch parent of its
@@ -80,9 +116,7 @@ run_check_bare() {
 			export TMPDIR
 		fi
 		# shellcheck disable=SC2086
-		PATH=$check_path STUB_STATE=$state STUB_REAL_SLEEP=$real_sleep \
-			STUB_REAL_SHA256=$real_sha256 \
-			$shell_under_test "$check" "$@" \
+		under_stubs $shell_under_test "$check" "$@" \
 			>"$work/stdout" 2>"$work/stderr"
 	)
 	status=$?

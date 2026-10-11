@@ -5,6 +5,21 @@
 # marks its REST port as listening, and the stub curl beside it answers for it.
 # Nodes are told apart by start order: publisher, fetcher, reproducer.
 #
+# Files it writes under $STUB_STATE (ROLE is one of the three names, PORT the
+# node's --api-port). The tests read the first group; the stub curl reads the
+# second, and renaming one of those leaves it answering "connection refused" for
+# a node that is running:
+#   invocations            one line per start: the arguments, joined by spaces
+#   args-ROLE              the arguments, one to a line
+#   environment-ROLE       the STORAGE_ variables the node was started with
+#   data-dir-at-start-ROLE what the node's data directory held when it started
+#   pids, pid-ROLE         the node's process id
+#   role-PORT              the ROLE that was started on PORT        (curl reads)
+#   listening-ROLE         present while the node listens: made when it starts
+#                          to, removed when it is sent SIGTERM      (curl reads)
+# and one file in the node's own data directory, started-by-stub, which the
+# next node to be given that directory would find already there.
+#
 # Knobs, as files under $STUB_STATE (ROLE is one of the three names):
 #   exit-at-start-ROLE    exit 1 without ever listening
 #   deaf-ROLE             keep running, never listen

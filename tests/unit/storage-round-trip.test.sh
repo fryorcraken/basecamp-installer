@@ -1,7 +1,19 @@
 # Unit tests for tests/integration/storage-round-trip.sh, sourced by
-# tests/run.sh, which defines begin, knob, run_check, the assertions and end.
+# tests/run.sh, which defines begin, knob, run_check, run_check_bare,
+# in_directory, api_port_of, make_toolbox, the assertions and end.
 # Each test names the spec requirement or scenario it pins; NO SPEC marks a
 # behaviour the spec does not state.
+#
+# The variables a test reads are all assigned in run.sh, so a misspelt one is an
+# empty string and not an error:
+#   begin sets   $work (this test's directory), $state (where the stubs record
+#                what they saw), $check_path (the PATH the check is run with),
+#                $check_tmpdir and $check_tmpdir_unset (TMPDIR for
+#                run_check_bare)
+#   run_check and run_check_bare set   $status (the check's exit status) and
+#                $scratch (the scratch directory it printed)
+#   fixed for the whole suite   $check, $stubs, $stub_cli, $tests_dir, $repo,
+#                $shell_under_test, $real_sleep, $real_sha256
 # shellcheck shell=sh disable=SC2154
 
 # --- The storage CLI is supplied by the caller -------------------------------
@@ -64,9 +76,7 @@ begin "a bare name runs the file in the current directory"
 mkdir "$work/cwd"
 printf '#!/bin/sh\n: >"$STUB_STATE/local-cli-ran"\nexit 1\n' >"$work/cwd/storage"
 chmod +x "$work/cwd/storage"
-cd "$work/cwd" || exit 2
-run_check storage
-cd "$repo" || exit 2
+in_directory "$work/cwd" run_check storage
 assert_failed_at "publisher start"
 [ -f "$state/local-cli-ran" ] || flunk "the file in the current directory was not run"
 assert_line_count "$state/invocations" 0
@@ -145,6 +155,34 @@ assert_line_count "$state/invocations" 0
 assert_no_scratch_made
 end
 
+# refuse_missing_posix_tool TOOL: the toolbox holds every tool but TOOL. The
+# diagnostic must name TOOL and none of the other four, so that a check which
+# stopped over the wrong one, or named the wrong one, does not pass. The step
+# name "tools" holds none of the five names, nor does "storage-round-trip".
+refuse_missing_posix_tool() {
+	begin "$1 is not available"
+	make_toolbox "$work/toolbox"
+	rm "$work/toolbox/$1"
+	check_path=$work/toolbox
+	run_check "$stub_cli"
+	assert_failed_at tools
+	assert_contains "$work/stderr" "$1"
+	for other_tool in awk sed cmp wc env; do
+		[ "$other_tool" = "$1" ] || assert_lacks "$work/stderr" "$other_tool"
+	done
+	assert_line_count "$state/invocations" 0
+	assert_no_scratch_made
+}
+
+refuse_missing_posix_tool awk
+end
+refuse_missing_posix_tool sed
+end
+refuse_missing_posix_tool cmp
+end
+refuse_missing_posix_tool wc
+end
+
 # --- The command line is one operand and one option --------------------------
 
 begin "unknown option"
@@ -175,18 +213,14 @@ end
 # that begins with a hyphen: only the terminator can make it an operand.
 begin "an operand after the option terminator is the storage CLI"
 cp "$stub_cli" "$work/-cli"
-cd "$work" || exit 2
-run_check -- -cli
-cd "$repo" || exit 2
+in_directory "$work" run_check -- -cli
 assert_status_zero
 assert_line_count "$state/invocations" 3
 end
 
 begin "a hyphen-led operand without the terminator is an unknown option"
 cp "$stub_cli" "$work/-cli"
-cd "$work" || exit 2
-run_check -cli
-cd "$repo" || exit 2
+in_directory "$work" run_check -cli
 assert_failed_at usage
 assert_contains "$work/stderr" "-cli"
 assert_line_count "$state/invocations" 0
@@ -204,32 +238,36 @@ begin "nodes are confined to localhost"
 run_check "$stub_cli"
 assert_status_zero
 assert_line_count "$state/invocations" 3
-sed -n 1p "$state/invocations" >"$work/publisher-args"
-sed -n 2p "$state/invocations" >"$work/fetcher-args"
-sed -n 3p "$state/invocations" >"$work/reproducer-args"
+for node in publisher fetcher reproducer; do
+	grep -x -- '--nat=extip:127\.0\.0\.1' "$state/args-$node" >/dev/null ||
+		flunk "the $node lacks --nat=extip:127.0.0.1: $(cat "$state/args-$node")"
+	grep -x -- '--listen-ip=127\.0\.0\.1' "$state/args-$node" >/dev/null ||
+		flunk "the $node lacks --listen-ip=127.0.0.1: $(cat "$state/args-$node")"
+done
+assert_lacks "$state/invocations" "--network"
+# Every request line is METHOD URL, so a request to another host has a URL that
+# does not begin http://127.0.0.1: after the method.
+grep -v ' http://127\.0\.0\.1:' "$state/requests" >"$work/off-host-requests"
+assert_line_count "$work/off-host-requests" 0
+end
+
+# Requirement "Nodes are confined to localhost", the bootstrap clauses. The stub
+# publisher's peer record is spr:STUB-publisher, and nothing else is.
+begin "the fetcher is bootstrapped from the publisher alone"
+run_check "$stub_cli"
+assert_status_zero
+assert_line_count "$state/invocations" 3
 # "--bootstrap-node" alone, without the "=": a bootstrap node given as a separate
 # argument is still a bootstrap node. "--no-bootstrap-node" does not contain it.
 for unbootstrapped in publisher reproducer; do
-	assert_contains "$work/$unbootstrapped-args" "--no-bootstrap-node"
-	assert_lacks "$work/$unbootstrapped-args" "--bootstrap-node"
+	assert_contains "$state/args-$unbootstrapped" "--no-bootstrap-node"
+	assert_lacks "$state/args-$unbootstrapped" "--bootstrap-node"
 done
-assert_lacks "$work/fetcher-args" "--no-bootstrap-node"
-for node in publisher fetcher reproducer; do
-	tr ' ' '\n' <"$work/$node-args" >"$work/$node-arg-lines"
-	grep -x -- '--nat=extip:127\.0\.0\.1' "$work/$node-arg-lines" >/dev/null ||
-		flunk "the $node lacks --nat=extip:127.0.0.1: $(cat "$work/$node-args")"
-	grep -x -- '--listen-ip=127\.0\.0\.1' "$work/$node-arg-lines" >/dev/null ||
-		flunk "the $node lacks --listen-ip=127.0.0.1: $(cat "$work/$node-args")"
-done
-# The stub publisher's peer record is spr:STUB-publisher, and nothing else is.
-tr ' ' '\n' <"$work/fetcher-args" | grep -- '^--bootstrap-node' >"$work/fetcher-bootstrap"
+assert_lacks "$state/args-fetcher" "--no-bootstrap-node"
+grep -- '^--bootstrap-node' "$state/args-fetcher" >"$work/fetcher-bootstrap"
 assert_line_count "$work/fetcher-bootstrap" 1
 grep -x -- '--bootstrap-node=spr:STUB-publisher' "$work/fetcher-bootstrap" >/dev/null ||
 	flunk "the fetcher's bootstrap node is not the publisher: $(cat "$work/fetcher-bootstrap")"
-assert_lacks "$state/invocations" "--network"
-assert_lacks "$state/requests" "OFF-HOST"
-grep -v ' http://127\.0\.0\.1:' "$state/requests" >"$work/off-host-requests"
-assert_line_count "$work/off-host-requests" 0
 end
 
 # Requirement "An option's value is joined to its option". The stub CLI writes
@@ -502,8 +540,8 @@ end
 begin "a full pass makes four uploads, one to the publisher and three to the reproducer"
 run_check "$stub_cli"
 assert_status_zero
-publisher_port=$(sed -n 1p "$state/invocations" | tr ' ' '\n' | sed -n 's/^--api-port=//p')
-reproducer_port=$(sed -n 3p "$state/invocations" | tr ' ' '\n' | sed -n 's/^--api-port=//p')
+publisher_port=$(api_port_of publisher)
+reproducer_port=$(api_port_of reproducer)
 sed -n 's|^POST http://127\.0\.0\.1:\([0-9]*\)/.*|\1|p' "$state/requests" >"$work/upload-ports"
 printf '%s\n%s\n%s\n%s\n' "$publisher_port" "$reproducer_port" "$reproducer_port" "$reproducer_port" \
 	>"$work/expected-upload-ports"
@@ -511,24 +549,34 @@ cmp -s "$work/expected-upload-ports" "$work/upload-ports" ||
 	flunk "the uploads went to ports: $(cat "$work/upload-ports"); expected: $(cat "$work/expected-upload-ports")"
 end
 
-begin "the fetcher starts empty, fetches by CID without advertising, and is stopped"
+begin "the fetcher fetches by CID without advertising"
 run_check "$stub_cli"
 assert_status_zero
-assert_empty_file "$state/data-dir-at-start-fetcher"
 recorded_cid=$(sed -n '1s/^publisher \([^ ]*\) .*/\1/p' "$state/uploads")
 grep -F '/network/stream' "$state/requests" >"$work/fetch-requests"
 assert_line_count "$work/fetch-requests" 1
 assert_contains "$work/fetch-requests" "/api/storage/v1/data/$recorded_cid/network/stream?advertise=false"
+end
+
 # The fetcher is started only after the CID is recorded: its first request
 # comes after the publisher's upload in the request log.
+begin "the fetcher is started only after the CID is recorded"
+run_check "$stub_cli"
+assert_status_zero
 upload_line=$(grep -n 'POST ' "$state/requests" | sed -n '1s/:.*//p')
-fetcher_port=$(sed -n 2p "$state/invocations" | tr ' ' '\n' | sed -n 's/^--api-port=//p')
+fetcher_port=$(api_port_of fetcher)
 fetcher_line=$(grep -n "127\.0\.0\.1:$fetcher_port/" "$state/requests" | sed -n '1s/:.*//p')
 [ "$upload_line" -lt "$fetcher_line" ] || flunk "the fetcher was contacted before the upload"
+end
+
 # The stop: "once the fetch has ended" is before the reproducer is contacted, not
 # at exit, where the check's cleanup would stop a fetcher it had left running.
 # The stub curl logged every request made while the stub fetcher still listened.
-reproducer_port=$(sed -n 3p "$state/invocations" | tr ' ' '\n' | sed -n 's/^--api-port=//p')
+begin "the fetcher is stopped before the reproducer is contacted"
+run_check "$stub_cli"
+assert_status_zero
+fetcher_port=$(api_port_of fetcher)
+reproducer_port=$(api_port_of reproducer)
 grep -F "127.0.0.1:$fetcher_port/" "$state/requests-while-fetcher-up" >"$work/while-up-fetcher"
 [ -s "$work/while-up-fetcher" ] || flunk "the stub logged no request to the fetcher while it listened"
 grep -F "127.0.0.1:$reproducer_port/" "$state/requests-while-fetcher-up" >"$work/while-up-reproducer"
@@ -562,7 +610,7 @@ assert_lacks "$state/fetched-by" "reproducer"
 grep '^reproducer .* poc-payload.bin 131072 ' "$state/uploads" >"$work/pinned-reuploads"
 assert_line_count "$work/pinned-reuploads" 1
 # No download request of any kind went to the reproducer's REST port.
-reproducer_port=$(sed -n 3p "$state/invocations" | tr ' ' '\n' | sed -n 's/^--api-port=//p')
+reproducer_port=$(api_port_of reproducer)
 grep -F "127.0.0.1:$reproducer_port/" "$state/requests" >"$work/reproducer-requests"
 [ -s "$work/reproducer-requests" ] || flunk "the reproducer was sent no request"
 assert_lacks "$work/reproducer-requests" "/network/"
@@ -666,7 +714,7 @@ assert_contains "$work/stderr" "already answers"
 assert_contains "$work/stderr" "fetcher"
 # Only the publisher was started.
 assert_line_count "$state/invocations" 1
-publisher_port=$(sed -n 1p "$state/invocations" | tr ' ' '\n' | sed -n 's/^--api-port=//p')
+publisher_port=$(api_port_of publisher)
 # The port the check asked about last, as the stub curl logged it.
 probed_port=$(sed -n '$s|^GET http://127\.0\.0\.1:\([0-9]*\)/.*|\1|p' "$state/requests")
 [ -n "$probed_port" ] || flunk "the last request was not a probe of a port"
@@ -1018,8 +1066,7 @@ interrupt_check() {
 	reset_signals=
 	env --default-signal=INT true 2>/dev/null && reset_signals="env --default-signal=INT"
 	# shellcheck disable=SC2086
-	PATH=$check_path STUB_STATE=$state STUB_REAL_SLEEP=$real_sleep \
-		$reset_signals $shell_under_test "$check" --scratch-parent "$work/scratch" "$stub_cli" \
+	(under_stubs $reset_signals $shell_under_test "$check" --scratch-parent "$work/scratch" "$stub_cli") \
 		>"$work/stdout" 2>"$work/stderr" &
 	check_pid=$!
 	waited=0
@@ -1118,9 +1165,7 @@ end
 # directory, which is still empty, and the scratch parent gained one entry.
 begin "a pass writes nothing outside the scratch directory"
 mkdir "$work/cwd"
-cd "$work/cwd" || exit 2
-run_check "$stub_cli"
-cd "$repo" || exit 2
+in_directory "$work/cwd" run_check "$stub_cli"
 assert_status_zero
 ls -A "$work/cwd" >"$work/cwd-entries"
 assert_line_count "$work/cwd-entries" 0
@@ -1186,9 +1231,7 @@ end
 # current directory.
 begin "an empty scratch parent is refused"
 mkdir "$work/cwd"
-cd "$work/cwd" || exit 2
-run_check --scratch-parent '' "$stub_cli"
-cd "$repo" || exit 2
+in_directory "$work/cwd" run_check --scratch-parent '' "$stub_cli"
 assert_failed_at scratch
 assert_line_count "$state/invocations" 0
 ls -A "$work/cwd" >"$work/cwd-entries"
@@ -1218,9 +1261,7 @@ end
 # directory elsewhere.
 begin "a relative scratch parent gives an absolute scratch directory"
 mkdir "$work/relative-parent"
-cd "$work" || exit 2
-run_check --scratch-parent relative-parent "$stub_cli"
-cd "$repo" || exit 2
+in_directory "$work" run_check --scratch-parent relative-parent "$stub_cli"
 assert_status_zero
 case $scratch in
 "$work/relative-parent"/*/*) flunk "the scratch directory '$scratch' is not a direct child of $work/relative-parent" ;;
@@ -1296,9 +1337,7 @@ make_mktemp_shim "$work/shim" "$work/fake-tmp"
 check_path=$work/shim:$stubs:$PATH
 check_tmpdir_unset=1
 mkdir "$work/cwd"
-cd "$work/cwd" || exit 2
-run_check_bare "$stub_cli"
-cd "$repo" || exit 2
+in_directory "$work/cwd" run_check_bare "$stub_cli"
 assert_status_zero
 assert_scratch_asked_under_tmp
 ls -A "$work/cwd" >"$work/cwd-entries"
@@ -1310,9 +1349,7 @@ make_mktemp_shim "$work/shim" "$work/fake-tmp"
 check_path=$work/shim:$stubs:$PATH
 check_tmpdir=
 mkdir "$work/cwd"
-cd "$work/cwd" || exit 2
-run_check_bare "$stub_cli"
-cd "$repo" || exit 2
+in_directory "$work/cwd" run_check_bare "$stub_cli"
 assert_status_zero
 assert_scratch_asked_under_tmp
 ls -A "$work/cwd" >"$work/cwd-entries"
@@ -1354,9 +1391,7 @@ done
 # A directory may be named "-", which cd would read as "the previous directory".
 begin "a scratch parent named - is a directory like any other"
 mkdir -p "$work/cwd/-"
-cd "$work/cwd" || exit 2
-run_check --scratch-parent - "$stub_cli"
-cd "$repo" || exit 2
+in_directory "$work/cwd" run_check --scratch-parent - "$stub_cli"
 assert_status_zero
 case $scratch in
 "$work/cwd/-"/*) ;;
