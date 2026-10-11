@@ -52,6 +52,15 @@ Also outside this capability:
   check ended by any other signal is not stated.
 - **Removing the scratch directory.** The check never deletes it; that is its
   caller's.
+- **Whether a run is refused or carries on when a `STORAGE_` variable's name
+  is not a shell identifier.** Some shells drop such a variable before the
+  check sees it. What holds either way is that no node is given it.
+- **An environment variable whose name contains a newline.**
+- **How many times the sha256 tool is run, and in what order beyond the test
+  content's digest being computed before the upload.**
+- **Whether a peer record or a CID of the accepted form is one the storage
+  network would accept.** The check refuses a malformed one; it does not decode
+  either.
 
 ## ADDED Requirements
 
@@ -186,6 +195,42 @@ an address off the local machine.
 - **WHEN** the check starts a node
 - **THEN** the storage CLI invocation carries no `--network`
 
+### Requirement: The publisher's peer record is checked before it is used
+The check MUST exit non-zero, without starting the fetcher, unless the peer
+record the publisher returned is, apart from trailing newlines, the prefix
+`spr:` followed by one or more characters that are each a letter, a digit, `-`,
+`_` or `=`.
+
+#### Scenario: Publisher answers with something that is not a peer record
+- **WHEN** the publisher answers the peer record request successfully with
+  `<html>not a peer record</html>`
+- **THEN** the check exits non-zero, the storage CLI has been invoked once
+  only, and its diagnostic names the publisher's start and the peer record
+
+#### Scenario: Peer record has no body
+- **WHEN** the publisher answers the peer record request successfully with
+  `spr:` and nothing after it
+- **THEN** the check exits non-zero, the storage CLI has been invoked once
+  only, and its diagnostic names the publisher's start and the peer record
+
+#### Scenario: Peer record carries a character outside the accepted set
+- **WHEN** the publisher answers the peer record request successfully with
+  `spr:` followed by a body that contains a space, a `,` or a `/`
+- **THEN** the check exits non-zero and the storage CLI has been invoked once
+  only
+
+### Requirement: An option's value is joined to its option
+The check MUST give every storage CLI option that takes a value as one
+argument of the form `--name=value`, and MUST NOT pass a value as an argument
+of its own.
+
+#### Scenario: Every valued option is one argument
+- **WHEN** the check starts a node
+- **THEN** each of `--data-dir`, `--api-port`, `--listen-port`, `--listen-ip`,
+  `--api-bindaddr`, `--nat` and, for the fetcher, `--bootstrap-node` appears in
+  the invocation as an argument that begins with that name and `=`, and no
+  argument is exactly one of those names
+
 ### Requirement: A node's REST API is bound to localhost
 The check MUST start every node with its REST API bound to `127.0.0.1`, stated
 in the invocation as `--api-bindaddr=127.0.0.1`.
@@ -208,6 +253,27 @@ It MUST NOT give any node a configuration file (`--config-file`).
   `STORAGE_METRICS=true` in its environment
 - **THEN** the environment of every storage CLI invocation holds no variable
   whose name begins with `STORAGE_`
+
+### Requirement: A storage variable that cannot be removed stops the run
+The check MUST exit non-zero, before starting any node and before creating its
+scratch directory, when it cannot give the nodes an environment that holds no
+variable whose name begins with `STORAGE_`. A line that begins with `STORAGE_`
+inside the value of a variable of another name MUST be treated as a variable
+the check cannot remove, and the diagnostic MUST carry that line's text up to
+its first `=`.
+
+#### Scenario: A value holds a line that begins with STORAGE_
+- **WHEN** the check is run with a variable in its environment whose name does
+  not begin with `STORAGE_` and whose value has a second line
+  `STORAGE_FORGED=1`
+- **THEN** it exits non-zero, the storage CLI is never invoked, no scratch
+  directory is created, and its diagnostic carries `STORAGE_FORGED`
+
+#### Scenario: Storage variable whose name is not a shell identifier
+- **WHEN** the check is run with a variable in its environment whose name
+  begins with `STORAGE_` and contains a character other than a letter, a digit
+  or `_`
+- **THEN** no storage CLI invocation has that variable in its environment
 
 ### Requirement: Requests stay on the local machine
 The check MUST address every HTTP request it makes to `127.0.0.1`, at the REST
@@ -323,6 +389,31 @@ content MUST be longer than one block and MUST NOT be a whole number of blocks.
 - **WHEN** the publisher answers the upload successfully with an empty body
 - **THEN** the check exits non-zero and its diagnostic names the upload step
 
+### Requirement: A returned CID is checked before it is used
+For every upload it makes, to any node, the check MUST exit non-zero unless the
+body of the answer is, apart from trailing newlines, one or more characters
+that are each a letter or a digit.
+
+#### Scenario: Upload returns something that is not a CID
+- **WHEN** the publisher answers the upload successfully with a body that
+  contains a `/`, or a second line
+- **THEN** the check exits non-zero, its diagnostic names the upload step, and
+  no manifest is requested
+
+#### Scenario: Second upload returns something that is not a CID
+- **WHEN** the reproducer answers the second upload successfully with a body
+  that contains a character other than a letter or a digit
+- **THEN** the check exits non-zero and its diagnostic names the re-upload step
+
+### Requirement: A full pass makes four uploads
+A run that passes MUST make exactly four uploads: one to the publisher and
+three to the reproducer.
+
+#### Scenario: Four uploads in a full pass
+- **WHEN** the check has run to a full pass
+- **THEN** it made four upload requests, the first to the publisher's REST API
+  port and the other three to the reproducer's
+
 ### Requirement: The manifest carries the pinned values
 After the upload, the check MUST read the manifest the publisher holds for the
 recorded CID and MUST exit non-zero unless it reports the filename
@@ -431,11 +522,11 @@ exit non-zero unless the CID that node returns equals the recorded CID.
 - **THEN** the check exits non-zero and its diagnostic names the re-upload step
 
 ### Requirement: The CID changes when the filename or the block size changes
-The check MUST upload the same test content once with a filename other than
-`poc-payload.bin` and block size 131072, and once with filename
-`poc-payload.bin` and a block size other than 131072, each with the pinned
-mimetype. It MUST exit non-zero unless each of those two CIDs differs from the
-recorded CID.
+The check MUST upload the same test content to the reproducer once with a
+filename other than `poc-payload.bin` and block size 131072, and once with
+filename `poc-payload.bin` and a block size other than 131072, each with the
+pinned mimetype. It MUST exit non-zero unless each of those two CIDs differs
+from the recorded CID.
 
 #### Scenario: Different filename, different CID
 - **WHEN** the same content is uploaded with another filename and block size
