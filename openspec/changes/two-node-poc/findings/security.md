@@ -55,15 +55,31 @@ so I read every path for a skippable check and mutated three guards by hand.
       `STORAGE_` variable set. Reasoning in `design.md`, "The REST API is
       bound explicitly, and `STORAGE_` variables are removed".
 
-- [ ] **`tester`** — `tests/integration/storage-round-trip.sh:286` — the CID
+- [x] **`tester`** — `tests/integration/storage-round-trip.sh:286` — the CID
       character check in `upload` is not pinned by any test.
       **Scenario:** the CID goes into URLs (`check_manifest`, `fetch`) and into
       the result lines. A node answering `abc/../x` or a body with a newline and
       a fake `sha256=` line would be refused by the check at line 286.
       **Measured:** replacing `'' | *[!A-Za-z0-9]*)` with `'')` leaves all 71
       tests passing. The stub returns only well-formed CIDs.
+      **Outcome (`tester`): fixed.** Stub curl knob `upload-body-ROLE-N`
+      answers a node's Nth upload with a chosen body. Tests: publisher answers
+      with a slash (`abc/../x`), a second line carrying a fake `sha256=` line,
+      a space, a dot and a hyphen are each refused at the upload step with the
+      CLI invoked once and no manifest requested; the third reproducer upload
+      (compared only for difference) answering `abc def` is refused; and
+      "a CID followed by newlines is a CID" pins the "apart from trailing
+      newlines" clause from the other side. Predicted and observed: with the
+      character class removed all five publisher tests and the reproducer test
+      fail; with an over-strict check that rejects a trailing newline only the
+      newline test fails. Not testable as its own scenario: the spec's
+      "second upload returns something that is not a CID" for the first
+      reproducer upload, because a malformed answer there is also not the
+      recorded CID and the run fails at the same step either way (I wrote
+      those two tests, saw them survive the mutant, and removed them); that
+      is a note on the spec's scenario, not a defect to fix.
 
-- [ ] **`tester`** — `tests/integration/storage-round-trip.sh:290-299` — the peer
+- [x] **`tester`** — `tests/integration/storage-round-trip.sh:290-299` — the peer
       record validation in `read_publisher_spr` is not pinned by any test, and
       the spec has no scenario for it.
       **Scenario:** the publisher's `spr` body is placed in the fetcher's
@@ -75,6 +91,18 @@ so I read every path for a skippable check and mutated three guards by hand.
       so this is not an injection; the risk is a fetcher started on a garbage
       bootstrap value and a failure reported at the wrong step.
       **Severity:** low.
+      **Outcome (`tester`): fixed.** The spec now has the requirement and three
+      scenarios. Tests: the two the `dev-writer` wrote (an HTML body; `spr:`
+      with no body), plus bodies with a space, a comma and a slash, and a
+      record without the `spr:` prefix (each: refused at "publisher start",
+      CLI invoked once), plus "a peer record of every accepted character class
+      is passed to the fetcher" (`spr:AZaz09-_=` reaches `--bootstrap-node=`
+      unchanged). Predicted and observed, three mutants of the `case`: with the
+      character-class arm removed the space, comma and slash tests fail; with
+      the prefix arm removed only the prefix test fails; with `=` dropped from
+      the accepted set only the accepted-class test fails. The html and
+      no-body tests survive all three (the empty-body arm catches them); that
+      is the `dev-writer`'s coverage and I kept it.
 
 ## Areas read and found clean
 

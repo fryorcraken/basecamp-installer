@@ -47,9 +47,19 @@ it is a genuine departure from the rules or a preference.
       **Severity:** low.
       **Fixed** in `e2d3bbb`: `cleanup`'s header says the signals are ignored on purpose, so a second Ctrl-C cannot leave a node running, and why it exits with the saved status. Also in `design.md`, "Process handling". A comment; no test.
 
-- [ ] **`tester`** — `tests/run.sh:11-12` and `tests/unit/storage-round-trip.test.sh:5` — blanket file-level `shellcheck disable=SC2034` / `SC2154` hide every unused or unassigned variable in the whole file, not just the handful this split needs. **Genuine, minor; the lint gate is blind to what it was disabled for.**
+- [x] **`tester`** — `tests/run.sh:11-12` and `tests/unit/storage-round-trip.test.sh:5` — blanket file-level `shellcheck disable=SC2034` / `SC2154` hide every unused or unassigned variable in the whole file, not just the handful this split needs. **Genuine, minor; the lint gate is blind to what it was disabled for.**
       **Scenario:** `run.sh` assigns `stub_cli`, `scratch`, `repo` and others that only the sourced file reads, and the sourced file reads variables only `run.sh` assigns, so both directives are needed. But a typo such as `scrach=` in either file, or a dropped assignment in `begin`, is now invisible to `shellcheck`, which is the one static check the overlay's Test layers row relies on for these files. Replace with per-line disables on the few assignments, or with a single `: "$stub_cli" "$scratch" ...` use-site line that names the cross-file variables, so the directive's scope equals the intent.
       **Severity:** low. **Measured:** `shellcheck` is not installed in this tree, so the claim that nothing else is hidden was not run; the suite itself passes, 71 tests.
+      **Outcome (`tester`): deferred.** Narrowing a lint directive can only be
+      checked by running `shellcheck`, which is not installed in this tree and
+      which I was not to run (no `nix`); an edit I cannot lint could make the
+      lint gate fail or, worse, hide more. Where: the next session with
+      `shellcheck` (`nix run .#lint`, or `shellcheck --shell=sh -x tests/run.sh
+      tests/unit/*.sh`), which should first try the directives removed
+      altogether, since `-x` follows `# shellcheck source=` and may already see
+      the cross-file uses. This round added no new file-level directive.
+      The new code in `tests/run.sh` and the test file was written to avoid
+      unquoted expansions, but was not linted either.
 
 ## Areas that were clean
 

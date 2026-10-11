@@ -57,7 +57,7 @@ is available here.
       with the readiness requests the stub curl recorded; watched failing
       against the old "after 30 seconds" wording.
 
-- [ ] **`tester`** — `tests/integration/storage-round-trip.sh:373` — mutation
+- [x] **`tester`** — `tests/integration/storage-round-trip.sh:373` — mutation
       survivor: deleting `stop_node "$fetcher_pid"` (the stop right after the
       fetch) leaves all 71 unit tests passing.
       **Scenario:** the fetcher then stays up through verification and the whole
@@ -69,8 +69,14 @@ is available here.
       **Measured:** 71 of 71 tests pass under this mutation (mutant run on a copy
       of `tests/` under `tmp/`).
       **Severity:** a test gap, not a code defect.
+      **Outcome (`tester`): fixed**, the same gap as the spec-test entry on the
+      fetcher's stop: "the fetcher starts empty, fetches by CID without
+      advertising, and is stopped" now asserts no request reached the
+      reproducer while the stub fetcher still listened. Observed failing with
+      `stop_node "$fetcher_pid"` deleted (it and "SIGTERM during the stop of a
+      node still leaves no node behind" fail; nothing else).
 
-- [ ] **`tester`** — `tests/integration/storage-round-trip.sh:94` — mutation
+- [x] **`tester`** — `tests/integration/storage-round-trip.sh:94` — mutation
       survivor: deleting `kill "$request_pid"` from `cleanup` leaves all 71
       tests passing.
       **Scenario:** a `SIGTERM` that arrives while a request is in flight (the
@@ -83,6 +89,13 @@ is available here.
       of `tests/` under `tmp/`).
       **Severity:** a test gap; the behaviour it guards (the design's "curl runs
       in the background" decision) is a stated reason for the structure.
+      **Outcome (`tester`): fixed.** New stub curl knob `fetch-hangs`: the
+      download request stays alive, keeps a witness file `request-running`,
+      and removes it when sent `SIGTERM`. Test "SIGTERM during a request leaves
+      no request running" sends `SIGTERM` once the witness exists and waits up
+      to five seconds for it to go. Predicted and observed: with
+      `kill "$request_pid"` deleted from `cleanup`, that test and no other
+      fails.
 
 ## Areas that held
 

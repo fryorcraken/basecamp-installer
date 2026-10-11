@@ -13,7 +13,7 @@ restored (`git status --short` is empty). Output read from `sh tests/run.sh`:
 2. The `stop_node "$fetcher_pid"` call after `fetch` removed. **Survived**:
    71 tests, 0 failed.
 
-- [ ] **`tester`** — "the fetcher starts empty, fetches by CID without
+- [x] **`tester`** — "the fetcher starts empty, fetches by CID without
       advertising, and is stopped" and "the reproduction node starts empty and
       never fetched", `assert_empty_file "$state/data-dir-at-start-*"`;
       `tests/unit/stubs/storage` line 36.
@@ -28,8 +28,17 @@ restored (`git status --short` is empty). Output read from `sh tests/run.sh`:
       write a marker file into its data directory when it starts and, in the
       test, assert each node's data directory differs from every other node's
       and held nothing before the stub wrote.
+      **Outcome (`tester`): fixed.** `tests/unit/stubs/storage` now writes a
+      marker file into its data directory after recording what the directory
+      held, so a directory a node shares with an earlier one is not empty at
+      start; and the new test "each node is given a data directory of its own"
+      compares the three `--data-dir=` values. Predicted and observed: with the
+      check changed so every node gets the publisher's `data` directory, "the
+      fetcher starts empty ...", "the reproduction node starts empty and never
+      fetched" and "each node is given a data directory of its own" fail, and
+      nothing else does (mutant 1 of the run; your mutation 1 survived before).
 
-- [ ] **`tester`** — "the fetcher starts empty, fetches by CID without
+- [x] **`tester`** — "the fetcher starts empty, fetches by CID without
       advertising, and is stopped"; the name promises a stop the body never
       checks. Requirement "The fetcher is ephemeral and does not advertise":
       "MUST stop it once the fetch has ended".
@@ -41,8 +50,15 @@ restored (`git status --short` is empty). Output read from `sh tests/run.sh`:
       stub curl record, at the reproducer's first request, whether
       `listening-fetcher` still exists, and assert it does not; or rename the
       test.
+      **Outcome (`tester`): fixed**, by the first of your two shapes. The stub
+      curl logs every request made while the stub fetcher listens
+      (`requests-while-fetcher-up`); the test now asserts the log holds
+      requests to the fetcher's port (so the log works) and none to the
+      reproducer's. Predicted and observed: with `stop_node "$fetcher_pid"`
+      deleted, that test fails, and so does "SIGTERM during the stop of a node
+      still leaves no node behind" (its stop never starts); nothing else.
 
-- [ ] **`tester`** — requirement "Fetched content is verified against the
+- [x] **`tester`** — requirement "Fetched content is verified against the
       original": "byte-for-byte identical ... and its sha256 equals". Task 4.4
       says no test can show the byte comparison, and it is left unticked.
       **Scenario:** that is not so. A sha256 shim that prints one constant
@@ -53,8 +69,24 @@ restored (`git status --short` is empty). Output read from `sh tests/run.sh`:
       without the byte comparison masking it; today "fetched content differs"
       fails both comparisons at once, so deleting either one leaves it green.
       Severity medium. **Not measured:** I did not mutate the comparison.
+      **Outcome (`tester`): fixed**, both cases, with a new shim
+      `tests/unit/fixed-sha256/sha256sum` that prints one hardcoded digest for
+      every call, and a different hardcoded one for the second call under a
+      knob. Tests: "equal digests do not hide a fetched content that differs"
+      (with `fetch-corrupt`; asserts the byte-for-byte diagnostic),
+      "identical bytes do not hide a digest that differs" (asserts the
+      hardcoded expected and actual digests, no byte diagnostic, and that the
+      bytes are equal) and "equal digests and identical bytes pass" (the shim
+      itself does not fail a run). Predicted and observed: with the `cmp` call
+      deleted only the first fails; with the digest comparison deleted the
+      second fails, and so does "fetched content differs" (its diagnostic
+      assertions on the digests). `NO SPEC:` marked, on the shim and on the
+      broken-sha256 tool: they depend on the fetched content's digest being the
+      second call, which the spec now puts outside the capability. Task 4.4 and
+      `design.md`'s `cmp` guard row say no test shows this; that is now stale
+      (`dev-writer`'s to prune).
 
-- [ ] **`tester`** — requirement "A REST port that already answers is
+- [x] **`tester`** — requirement "A REST port that already answers is
       refused": "Before starting a node ... the REST API port that node is to
       be given" (every node).
       **Scenario:** only the publisher's and the fetcher's ports are tested. A
@@ -63,8 +95,15 @@ restored (`git status --short` is empty). Output read from `sh tests/run.sh`:
       (`reply 200`); a typical foreign server answers 404 or 401 on
       `/`, and "answers" is not shown to include those. Severity medium.
       **Not measured.**
+      **Outcome (`tester`): fixed.** The stub curl gained `foreign-after-fetch`
+      (a server on the port of the node after the fetcher) and
+      `foreign-status`. Tests: "a foreign server on the reproducer's REST port
+      is refused" and "a foreign server answering HTTP 404 / 401 on the
+      publisher's REST port is refused". Predicted and observed: with the probe
+      skipped for the reproducer only the first fails; with the probe made to
+      require HTTP 200 only the 404 and 401 tests fail.
 
-- [ ] **`tester`** — requirement "The caller chooses where the scratch
+- [x] **`tester`** — requirement "The caller chooses where the scratch
       directory is made": "and under `/tmp` otherwise".
       **Scenario:** no test runs with `TMPDIR` unset or empty. `run_check_bare`
       supports an empty `TMPDIR` (its comment says so) but no test sets
@@ -73,8 +112,18 @@ restored (`git status --short` is empty). Output read from `sh tests/run.sh`:
       by putting a recording `mktemp` shim on `PATH`. Severity medium. Also,
       `run_check` does not set `TMPDIR`, so "`--scratch-parent` beats `TMPDIR`"
       is tested only if the caller's own environment happens to set it.
+      **Outcome (`tester`): fixed.** `run_check_bare` can now leave `TMPDIR`
+      unset, and a recording `mktemp` shim (made at test time, redirecting a
+      `/tmp/` template into the test's own directory) shows the template the
+      check asked for. Tests: "the scratch directory is under /tmp when TMPDIR
+      is not set" and "... when TMPDIR is empty" (both also run from an empty
+      directory), and "--scratch-parent beats TMPDIR" (which now sets `TMPDIR`
+      itself). Predicted and observed: `${TMPDIR:-/tmp}` changed to
+      `${TMPDIR:-.}` fails the two `/tmp` tests; changed to `${TMPDIR-/tmp}`
+      fails only the empty one; `--scratch-parent` made to yield to `TMPDIR`
+      fails only "--scratch-parent beats TMPDIR".
 
-- [ ] **`tester`** — "a relative scratch parent gives an absolute scratch
+- [x] **`tester`** — "a relative scratch parent gives an absolute scratch
       directory", `tests/unit/storage-round-trip.test.sh` line 789.
       **Scenario:** `run_check` states `--scratch-parent "$work/scratch"` first
       and the test adds `--scratch-parent scratch` with the current directory
@@ -83,15 +132,26 @@ restored (`git status --short` is empty). Output read from `sh tests/run.sh`:
       directory into the same place, passes. Use a relative directory distinct
       from the default (as the `chosen`, `from-env` and `-` tests do).
       Severity low.
+      **Outcome (`tester`): fixed.** The test now uses a relative directory
+      distinct from the default and asserts the default parent gained nothing;
+      "a scratch parent given with --scratch-parent ..." gained the same
+      assertion, which is scenario "Option given twice". Predicted and
+      observed: a check where the first `--scratch-parent` wins fails both of
+      them (and, as expected, the four other tests that rely on the later
+      value winning).
 
-- [ ] **`tester`** — "nodes are confined to localhost", the publisher and
+- [x] **`tester`** — "nodes are confined to localhost", the publisher and
       reproducer `assert_lacks ... "--bootstrap-node="`.
       **Scenario:** a publisher started with `--bootstrap-node SPR` (value as a
       separate argument) passes, because only the `=` form is searched for;
       `--no-bootstrap-node` does not contain `--bootstrap-node`, so searching for
       that bare string would work. Severity low. The fetcher's side is tight.
+      **Outcome (`tester`): fixed.** The two assertions search for
+      `--bootstrap-node` without the `=`. Predicted and observed: with the
+      publisher started with `--no-bootstrap-node --bootstrap-node` only
+      "nodes are confined to localhost" fails.
 
-- [ ] **`tester`** — requirement "The check is a POSIX sh program", scenario
+- [x] **`tester`** — requirement "The check is a POSIX sh program", scenario
       "Run by a POSIX shell that is not bash".
       **Scenario:** `sh tests/run.sh` runs the check with whatever `sh` is; on
       this machine that is bash, so the default run never exercises a non-bash
@@ -102,8 +162,18 @@ restored (`git status --short` is empty). Output read from `sh tests/run.sh`:
       clause about GNU-only and BSD-only options is not observable by the unit
       suite on Linux; it belongs to the macOS layer, which is not in this
       change.
+      **Outcome (`tester`): fixed for the shell clause; the option clause is
+      deferred to the macOS layer, as you say.** `tests/run.sh` now also runs a
+      full pass and a failed run under `dash` and under `busybox sh`, whichever
+      is installed and is not already the shell under test ("a full pass under
+      busybox sh", "a failed run under busybox sh leaves no node behind"); a
+      missing one prints a `skip` line. `dash` is not installed here, so only
+      busybox ran. Predicted and observed: with an array assignment
+      (`a=(1 2)`, which ash and dash reject) added to the check, both busybox
+      tests fail and the rest of the suite, run by bash, passes. `nix run
+      .#test` does not exist in the tree, so what it runs is not stated.
 
-- [ ] **`tester`** — `NO SPEC:` markers. `grep -rn "NO SPEC" tests` finds only
+- [x] **`tester`** — `NO SPEC:` markers. `grep -rn "NO SPEC" tests` finds only
       the header comment explaining the convention: no test carries one, yet the
       tests pin choices no scenario states. Mark each with `NO SPEC: <choice>`:
       the `--api-port=N` / `--listen-port=N` `=` form (the spec writes `=` only
@@ -116,6 +186,23 @@ restored (`git status --short` is empty). Output read from `sh tests/run.sh`:
       uploads);
       `--scratch-parent` stated twice with the later one winning (below).
       Severity low.
+      **Outcome (`tester`): fixed, and four of the five choices are no longer
+      unspecified.** The `=` form, the positive `--max-time`, the four uploads
+      and the repeated `--scratch-parent` are now requirements, with scenarios,
+      so they take no marker (and there is a test for each: "every valued
+      option is one --name=value argument", "every request carries a time
+      limit", "a full pass makes four uploads, one to the publisher and three
+      to the reproducer", the two scratch-parent tests above). The fifth, the
+      order of sha256 calls, is outside the capability, and is marked
+      `NO SPEC:` in `tests/unit/broken-sha256/sha256sum`, in the new
+      `tests/unit/fixed-sha256/sha256sum` and on "sha256 tool fails on the
+      fetched content". The two markers the `dev-writer` left (the `STORAGE_`
+      line that cannot be removed; the peer record that is not one) were on
+      tests that are kept; the spec-writer has since made both requirements,
+      so I replaced each marker with a citation of the requirement and
+      scenario, which is what the convention asks once the spec speaks. Report:
+      `grep -rn "NO SPEC" tests` now finds only the sha256 order and the
+      header convention.
 
 - [x] **`spec-writer`** — requirement "The command line is one operand and one
       option": the form is `[--scratch-parent DIR] [--] STORAGE_CLI`, and the
