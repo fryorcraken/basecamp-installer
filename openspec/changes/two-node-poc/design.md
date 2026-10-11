@@ -171,12 +171,67 @@ the run is refused, because some shells drop such a variable before the check
 sees it; where the shell keeps it, this check refuses. A variable whose name
 contains a newline is outside the spec, not handled and not claimed.
 
+The clean-up is only as good as the listing it reads, and a listing that is
+missing looks exactly like an environment with nothing to remove. Two cases
+made the run pass with the caller's `STORAGE_` variables handed to every node,
+both **observed** at the unit layer before they were closed:
+
+- **No `env` on `PATH`.** The shell printed "command not found" twice and the
+  run carried on to a full pass. `env` is therefore one of the tools
+  `require_tools` looks for; see "Which tools are looked for before anything
+  starts".
+- **An `env` that exits non-zero.** The listing was read as `env | sed`, and a
+  pipeline's status is its last command's, so `sed`'s zero hid `env`'s
+  failure. `list_environment` now takes the output into a variable with
+  `$(env)`, whose status is `env`'s, and fails at the step `environment` on
+  anything but zero, whatever was printed: a partial listing is not evidence
+  that the rest holds no `STORAGE_` variable. Both listings, the one before
+  the `unset` and the one after, go through it.
+
+Considered for seeing `env`'s status:
+
+- **`set -o pipefail`** is in POSIX only from the 2024 issue; the `sh` of a
+  stock desktop cannot be assumed to have it.
+- **A file under the scratch directory** would need the scratch directory to
+  exist before the environment is known to be clean, and the spec requires the
+  refusal to come before it is created.
+- **A here-document** to feed the variable to `sed` is a temporary file in
+  most shells, written under `TMPDIR`, outside the scratch directory. The
+  variable is piped from `printf` instead.
+
+Not closed: an `env` that exits zero and prints nothing, or prints a listing
+that is not the environment. The check trusts a zero status, as it trusts
+every other tool it finds on `PATH`; the spec asks for no more.
+
 The environment half was read from source and pinned at the unit layer, where
 the stub node records the `STORAGE_` variables it was started with. No real
 node was started with such a variable set. **Observed** for the option: a real
 node accepts `--api-bindaddr=127.0.0.1`, logs
 `REST service started address=127.0.0.1:28481`, and the run passes with the
 CID recorded under "The test content is deterministic".
+
+### Which tools are looked for before anything starts
+
+`require_tools` looks for a sha256 tool and then for the names in its list,
+and stops at the step `tools` naming the first one missing:
+
+- **`curl`, `mktemp`, and `sha256sum` or `shasum`** are outside POSIX, so a
+  stock desktop may lack them; the spec requires each to be named.
+- **`awk`, `sed`, `cmp`, `wc` and `env`** are POSIX and looked for all the
+  same, because the spec names these five. For the first four the reason is
+  the diagnostic: without the check a run ends at whichever step first needs
+  the utility, blamed on that step. For `env` it is not a matter of the
+  diagnostic: a run without it does not end at all (see the `STORAGE_`
+  decision above), so this is the one entry of the list whose absence would
+  otherwise be a pass.
+- **`cat`, `sleep` and `mkdir`** are run without being looked for. The spec
+  puts a missing POSIX utility other than the five outside the capability. A
+  list of every command the check runs was the alternative; it grows with the
+  program and is wrong the first time someone forgets it. Read from the
+  code, and not run: none of these three turns a failure into a pass. Without
+  `cat` no HTTP status is read, so no node is ever seen ready; without `mkdir`
+  no node gets a data directory; without `sleep` the readiness loop reaches
+  the same number of attempts sooner and a stop goes to `SIGKILL` at once.
 
 ### A node's data directory is made with mode 700
 
@@ -378,7 +433,10 @@ row that says no test turns red is a gap, and says whose.
 | A CLI name with no slash is prefixed with `./` | The shell looks the name up on `PATH`, which is the search the spec forbids. Watched red: "a bare name runs the file in the current directory" and "an operand after the option terminator is the storage CLI". |
 | `--listen-ip=127.0.0.1` | The node's peer-to-peer listener binds every interface (the CLI's default), so a machine on the same network could reach a node the spec confines to localhost. Watched red: "nodes are confined to localhost", which sees the option on each invocation. No test sees the address a real node binds. |
 | `--api-bindaddr=127.0.0.1` | The REST bind address is left to the CLI's lowest-priority default. Watched red, before the option was added: "every node's REST API is bound to localhost and takes no configuration file". |
-| `clear_storage_environment` | A `STORAGE_` variable of the caller configures every node. Watched red, before the function existed: "no node is given a STORAGE_ variable from the caller's environment" and "a STORAGE_ line the check cannot remove from the environment stops the run". The second test's guard, the re-listing after `unset`, was not removed on its own. |
+| `clear_storage_environment` | A `STORAGE_` variable of the caller configures every node. Watched red, before the function existed: "no node is given a STORAGE_ variable from the caller's environment" and "a STORAGE_ line the check cannot remove from the environment stops the run". The refusal on a leftover line was not removed on its own. |
+| `env` in the list `require_tools` looks for | Without `env` the clean-up lists nothing and removes nothing, and the run passes with the caller's `STORAGE_` variables given to every node. Watched red, before `env` was added to the list: "env is not available" (exit 0, three invocations). |
+| `list_environment` fails when `env` exits non-zero | A failed `env` reads as an environment with no `STORAGE_` variable. Watched red, with the listing still read as `env \| sed`: the three tests "an env that exits non-zero … stops the run" (after printing nothing, the environment, and a listing without the storage variable). |
+| The second `list_environment`, after the `unset` | The leftover test would read the listing taken before the `unset`. Watched red with that one call removed: "an env that exits non-zero on its second run stops the run", and also "no node is given a STORAGE_ variable from the caller's environment" and "an env shim that exits zero does not stop the run", which then refuse variables that were in fact removed. |
 | The peer record must be `spr:` and a body of base64url characters | The value is one quoted word, `--bootstrap-node=<value>`, so it cannot become a second option. What goes wrong is quieter: an error page or a truncated record starts a fetcher with a bootstrap node it cannot use, the fetcher finds no provider, and the run fails a fetch timeout later with the fetch step blamed. Watched red: "a publisher answer that is not a peer record is refused". "a peer record with no body is refused" was not seen failing: the mutant kept the empty case. |
 | `sha256_of` reads the file on standard input and accepts only output that starts with 64 hex digits | On standard input the tool prints no file name, so nothing but the digest can match. Trusting the exit status alone was the alternative: a tool that exits 0 and prints nothing would give two empty digests that compare equal, and a download would "verify" against nothing. Watched red with the length test removed: "sha256 tool prints nothing for the test content". The three other "sha256 tool …" tests stayed green under that mutant: a failing tool is caught by its exit status, and an empty digest for the fetched content alone is a mismatch. |
 | `-q` first and `--noproxy '*'` on every `curl` | A user's `~/.curlrc` or a proxy variable sends a localhost request to another machine. Watched red: "every request is made with -q first and --noproxy given *". The stub records the arguments; no test sees a real `curl` honour them. |
@@ -426,8 +484,8 @@ gives the first two atomically and fails if it cannot, which a `mkdir` of a
 name built from `$$` would not: a process id repeats, and the name can be
 guessed and created first by another user of a shared `/tmp`. `umask 077` at
 the top of the program covers the directory and every file later written under
-it, the node logs included. `mktemp` is not in POSIX, so it is one of the three
-tools the check names and looks for before doing anything.
+it, the node logs included. `mktemp` is not in POSIX, so it is one of the tools
+the check names and looks for before doing anything.
 
 The check keeps the directory after a pass as after a failure so that a pass
 can be inspected the same way; removing it is the caller's.

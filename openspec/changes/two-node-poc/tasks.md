@@ -27,6 +27,8 @@ built as `design.md` describes.
 - [x] 1.4 Write deterministic test content longer than one block and not a whole number of blocks, and record its sha256; verified by "uploads carry the pinned values"
 - [x] 1.5 Refuse a scratch parent that is not a directory, naming it as given and creating nothing, and take a directory named `-` as a directory; verified by "a scratch parent that does not exist is refused and named", "a scratch parent that is a file is refused and named", "an empty scratch parent is refused" and "a scratch parent named - is a directory like any other"
 - [x] 1.6 Keep the scratch directory after a pass; verified by "the scratch directory is kept after a pass"
+- [x] 1.7 Fail naming `curl`, `mktemp` or `env` when it is missing, before any node and before the scratch directory; verified by "curl is not available", "mktemp is not available" and "env is not available"
+- [ ] 1.8 Fail naming `awk`, `sed`, `cmp` or `wc` when it is missing, likewise. `require_tools` looks for all four; no unit test removes one yet, and those four tests are the `tester`'s to write, so this row is not ticked by the `dev-writer`
 
 ## 2. Nodes
 
@@ -38,6 +40,7 @@ built as `design.md` describes.
 - [x] 2.5 Record the reasoning for two ports, the reserved ports and the fixed constants in `design.md`; delivered as "Two ports per node, fixed in the program"
 - [x] 2.7 Start every node with `--api-bindaddr=127.0.0.1` and no `--config-file`; verified by "every node's REST API is bound to localhost and takes no configuration file"
 - [x] 2.8 Remove every `STORAGE_` variable from the environment before any node starts, and stop when one cannot be removed; verified by "no node is given a STORAGE_ variable from the caller's environment" and "a STORAGE_ line the check cannot remove from the environment stops the run"
+- [x] 2.10 Stop before any node and before the scratch directory when `env` exits non-zero, at either of the two listings and whatever it printed; verified by the three tests "an env that exits non-zero … stops the run" (after printing nothing, the environment, and a listing without the storage variable) and "an env that exits non-zero on its second run stops the run"
 - [x] 2.9 Refuse a publisher answer that is not a peer record before starting the fetcher; verified by "a publisher answer that is not a peer record is refused" and "a peer record with no body is refused"
 
 ## 3. Publish and manifest
