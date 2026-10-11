@@ -125,6 +125,26 @@ assert_line_count "$state/invocations" 0
 assert_no_scratch_made
 end
 
+# --- Five POSIX utilities are checked first ----------------------------------
+
+# Scenario "env is not available". Without env the check lists no environment
+# and so finds no STORAGE_ variable to remove; the caller's two are set here so
+# that a run which carried on is one that handed them to the nodes. The step
+# name "tools" is not "environment", so "env" below can only be the tool named.
+begin "env is not available"
+make_toolbox "$work/toolbox"
+rm "$work/toolbox/env"
+check_path=$work/toolbox
+STORAGE_API_BINDADDR=0.0.0.0
+export STORAGE_API_BINDADDR
+run_check "$stub_cli"
+unset STORAGE_API_BINDADDR
+assert_failed_at tools
+assert_contains "$work/stderr" "env"
+assert_line_count "$state/invocations" 0
+assert_no_scratch_made
+end
+
 # --- The command line is one operand and one option --------------------------
 
 begin "unknown option"
@@ -294,6 +314,78 @@ for node in publisher fetcher reproducer; do
 	if [ -f "$state/environment-$node" ]; then
 		assert_lacks "$state/environment-$node" "STORAGE_BAD-NAME"
 	fi
+done
+end
+
+# Requirement "An environment that cannot be listed stops the run".
+
+# make_env DIR LISTING_COMMAND STATUS: an env in DIR that runs LISTING_COMMAND
+# and exits STATUS. The check finds it first on PATH.
+make_env() {
+	mkdir "$1"
+	printf '%s\n' '#!/bin/sh' "$2" "exit $3" >"$1/env"
+	chmod +x "$1/env"
+}
+
+real_env=$(command -v env)
+
+# refuse_failing_env LABEL LISTING_COMMAND: the env the check lists its
+# environment with prints what LISTING_COMMAND prints and exits 1. The caller's
+# STORAGE_ variable is what a run that carried on would hand to the nodes.
+refuse_failing_env() {
+	begin "an env that exits non-zero $1 stops the run"
+	make_env "$work/env-shim" "$2" 1
+	check_path=$work/env-shim:$stubs:$PATH
+	STORAGE_API_BINDADDR=0.0.0.0
+	export STORAGE_API_BINDADDR
+	run_check "$stub_cli"
+	unset STORAGE_API_BINDADDR
+	assert_status_nonzero
+	assert_lacks "$work/stdout" "cid="
+	assert_line_count "$state/invocations" 0
+	assert_no_scratch_made
+	# NO SPEC: the spec does not say what the diagnostic of a failed env is;
+	# this check reports it at the step "environment".
+	assert_contains "$work/stderr" "storage-round-trip: environment:"
+}
+
+# "Whatever that env printed": nothing, the whole environment, and a listing
+# that lacks the STORAGE_ variable, which read alone says there is nothing to
+# remove.
+refuse_failing_env "after printing nothing" ':'
+end
+refuse_failing_env "after printing the environment" "$real_env"
+end
+refuse_failing_env "after printing a listing without the storage variable" 'echo HOME=/nowhere'
+end
+
+# The check lists its environment a second time, after removing what it found,
+# to see that nothing is left. An env that works once and then fails must stop
+# the run there too: the first listing says nothing about what the unset left.
+begin "an env that exits non-zero on its second run stops the run"
+make_env "$work/env-shim" \
+	"[ -f \"\$STUB_STATE/env-ran\" ] && exit 1; : >\"\$STUB_STATE/env-ran\"; $real_env" 0
+check_path=$work/env-shim:$stubs:$PATH
+run_check "$stub_cli"
+[ -f "$state/env-ran" ] || flunk "the check did not run the env shim"
+assert_status_nonzero
+assert_lacks "$work/stdout" "cid="
+assert_line_count "$state/invocations" 0
+assert_no_scratch_made
+end
+
+# The shim is not what stops the runs above: the same shim exiting zero passes,
+# and the nodes are given no STORAGE_ variable.
+begin "an env shim that exits zero does not stop the run"
+make_env "$work/env-shim" "$real_env" 0
+check_path=$work/env-shim:$stubs:$PATH
+STORAGE_API_BINDADDR=0.0.0.0
+export STORAGE_API_BINDADDR
+run_check "$stub_cli"
+unset STORAGE_API_BINDADDR
+assert_status_zero
+for node in publisher fetcher reproducer; do
+	assert_empty_file "$state/environment-$node"
 done
 end
 

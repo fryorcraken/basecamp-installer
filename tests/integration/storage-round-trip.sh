@@ -60,6 +60,7 @@ STOP_TIMEOUT=10
 #   rest_exit, rest_status          rest
 #   last_started_pid                launch_node
 #   sha256_tool                     require_tools
+#   environment_listing             list_environment
 #   sha256                          sha256_of
 #   payload, payload_sha256         write_payload
 #   uploaded_cid                    upload
@@ -296,13 +297,24 @@ require_tools() {
 		fail tools "no sha256 tool: neither sha256sum nor shasum is available"
 	fi
 	# Not every command the check runs. curl and mktemp are, with the sha256
-	# tool above, the tools outside POSIX; awk, sed, cmp and wc are POSIX and
-	# checked all the same. cat, sleep, mkdir and env are run without a check
-	# here, and a PATH that lacks one fails at the step that needs it.
-	for required_tool in curl awk sed cmp wc mktemp; do
+	# tool above, the tools outside POSIX; awk, sed, cmp, wc and env are POSIX
+	# and checked all the same. env is here because a run without it does not
+	# fail at the step that needs it: clear_storage_environment would list
+	# nothing, remove nothing, and hand the caller's STORAGE_ variables to the
+	# nodes. cat, sleep and mkdir are run without a check here.
+	for required_tool in curl awk sed cmp wc env mktemp; do
 		command -v "$required_tool" >/dev/null 2>&1 ||
 			fail tools "$required_tool is not available"
 	done
+}
+
+# list_environment: sets environment_listing to what env prints, and fails
+# when env does. env's output goes to a variable, never straight into a pipe:
+# a pipeline's status is its last command's, so "env | sed" reports sed's and
+# a failed env reads as an environment with no STORAGE_ variable in it.
+list_environment() {
+	environment_listing=$(env) ||
+		fail environment "cannot list the environment: env exited $?"
 }
 
 # clear_storage_environment: removes every STORAGE_ variable from this shell,
@@ -311,13 +323,18 @@ require_tools() {
 # every node's REST API on all interfaces while the run still passed.
 # It is called once, before any node, so no launch can forget it.
 clear_storage_environment() {
-	for storage_variable in $(env | sed -n 's/^\(STORAGE_[A-Za-z0-9_]*\)=.*/\1/p'); do
+	list_environment
+	for storage_variable in $(printf '%s\n' "$environment_listing" |
+		sed -n 's/^\(STORAGE_[A-Za-z0-9_]*\)=.*/\1/p'); do
 		unset "$storage_variable"
 	done
 	# Guard: unset cannot remove a name that is not a shell identifier, and
 	# env cannot tell a variable from a line inside another one's value. Both
-	# leave a STORAGE_ line here, and the run stops rather than guess.
-	storage_leftover=$(env | sed -n 's/^\(STORAGE_[^=]*\).*/\1/p')
+	# leave a STORAGE_ line here, and the run stops rather than guess. The
+	# listing is taken again: the first one predates the unset.
+	list_environment
+	storage_leftover=$(printf '%s\n' "$environment_listing" |
+		sed -n 's/^\(STORAGE_[^=]*\).*/\1/p')
 	[ -z "$storage_leftover" ] ||
 		fail environment "cannot remove from the nodes' environment: $storage_leftover"
 }
