@@ -12,7 +12,7 @@ tree was refused by the permission checker, and was not worked around). The
 real-node runs the design records could not be repeated: no built storage CLI
 is available here.
 
-- [ ] **`dev-writer`** — `tests/integration/storage-round-trip.sh:68-75` —
+- [x] **`dev-writer`** — `tests/integration/storage-round-trip.sh:68-75` —
       `stop_node` forgets a node before the node is dead, so a signal that
       arrives while it waits lets the check exit with the node still running.
       **Scenario:** the fetcher is being stopped after the fetch (`stop_node
@@ -31,8 +31,13 @@ is available here.
       with a node that ignores the signal the violation lasts `STOP_TIMEOUT`.
       **Severity:** low, genuine defect. The fix is to drop the pid from
       `node_pids` only after `wait` returns.
+      **Fixed** in `4df3bd3`: `stop_node` calls `forget_node` after `wait`
+      returns, and `cleanup` ends the interrupted stop's watchdog before it
+      stops the node again. Test "SIGTERM during the stop of a node still
+      leaves no node behind", watched failing before the fix ("stub node … is
+      still running") and passing after, under `sh` and `busybox sh`.
 
-- [ ] **`dev-writer`** — `tests/integration/storage-round-trip.sh:169-181` —
+- [x] **`dev-writer`** — `tests/integration/storage-round-trip.sh:169-181` —
       the readiness bound counts loop iterations, not seconds, so the diagnostic
       "not ready after 30 seconds" can be wrong by a factor of three.
       **Scenario:** a node that is running and accepts the TCP connection but
@@ -44,6 +49,13 @@ is available here.
       it is misled.
       **Severity:** low, cosmetic-to-genuine; either count real time or word the
       message as a number of attempts.
+      **Fixed** in `4df3bd3`: the bound is `START_ATTEMPTS`, and the diagnostic
+      reads "not ready after N attempts, which is at most M seconds", M worked
+      out from the constants. Counting real time was not taken: POSIX `sh` has
+      no clock (`design.md`, "The bounds, and what would move them"). Test
+      "node never becomes ready" now compares the number in the diagnostic
+      with the readiness requests the stub curl recorded; watched failing
+      against the old "after 30 seconds" wording.
 
 - [ ] **`tester`** — `tests/integration/storage-round-trip.sh:373` — mutation
       survivor: deleting `stop_node "$fetcher_pid"` (the stop right after the

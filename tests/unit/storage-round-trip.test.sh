@@ -323,9 +323,8 @@ grep -v ' first=-q noproxy=\* ' "$state/curl-calls" >"$work/unbypassed-calls"
 assert_line_count "$work/unbypassed-calls" 0
 end
 
-# Not in a scenario: Failure stops the run, and "Publisher is gone" asks for a
-# bounded wait. The stub cannot time out, so the test sees that the fetch, and
-# every other request, carried a positive --max-time.
+# Scenario "Request time limit". The stub cannot time out, so the test sees
+# that the fetch, and every other request, carried a positive --max-time.
 begin "every request carries a time limit"
 run_check "$stub_cli"
 assert_status_zero

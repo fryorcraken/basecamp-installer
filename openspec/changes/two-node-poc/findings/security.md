@@ -38,10 +38,22 @@ so I read every path for a skippable check and mutated three guards by hand.
       alike, and a recording stub can observe it. The code does neither yet;
       that is the `dev-writer` entry below.
 
-- [ ] **`dev-writer`** — `tests/integration/storage-round-trip.sh:158-165` —
+- [x] **`dev-writer`** — `tests/integration/storage-round-trip.sh:158-165` —
       same defect, code side: the check inherits the caller's environment into
       every node. Apply once the spec above says what is required.
       **Scenario:** as above. **Severity:** low to medium.
+      **Fixed** in `4df3bd3`: every node is started with
+      `--api-bindaddr=127.0.0.1`, and `clear_storage_environment` unsets every
+      `STORAGE_` variable in the check's own shell before any node starts,
+      exiting non-zero when a `STORAGE_` line is still listed afterwards.
+      Tests "every node's REST API is bound to localhost and takes no
+      configuration file" and "no node is given a STORAGE_ variable from the
+      caller's environment", both watched failing before the fix. The
+      cannot-remove case is not in the spec; its test is marked `NO SPEC:`.
+      A real node was run with the new option (its log reads
+      `REST service started address=127.0.0.1:28481`); none was run with a
+      `STORAGE_` variable set. Reasoning in `design.md`, "The REST API is
+      bound explicitly, and `STORAGE_` variables are removed".
 
 - [ ] **`tester`** — `tests/integration/storage-round-trip.sh:286` — the CID
       character check in `upload` is not pinned by any test.
