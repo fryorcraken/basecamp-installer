@@ -55,7 +55,7 @@ Also outside this capability:
 - **Whether a run is refused or carries on when a `STORAGE_` variable's name
   is not a shell identifier.** Some shells drop such a variable before the
   check sees it. What holds either way is that no node is given it.
-- **A missing POSIX utility other than `awk`, `sed`, `cmp` and `wc`.** The
+- **A missing POSIX utility other than `awk`, `sed`, `cmp`, `wc` and `env`.** The
   check does not look for any other before it starts; at which step a run
   without one ends, and with what diagnostic, is not stated.
 - **An environment variable whose name contains a newline.**
@@ -101,10 +101,15 @@ missing tool.
 - **WHEN** `mktemp` is not available to the check
 - **THEN** it exits non-zero, starts no node, and its diagnostic names `mktemp`
 
-### Requirement: Four POSIX utilities are checked first
+### Requirement: Five POSIX utilities are checked first
 The check MUST exit non-zero, before starting any node and before creating its
-scratch directory, when one of `awk`, `sed`, `cmp` and `wc` is not available,
-and its diagnostic MUST name the missing utility.
+scratch directory, when one of `awk`, `sed`, `cmp`, `wc` and `env` is not
+available, and its diagnostic MUST name the missing utility.
+
+#### Scenario: env is not available
+- **WHEN** `env` is not available to the check
+- **THEN** it exits non-zero, starts no node, creates no scratch directory, and
+  its diagnostic names `env`
 
 #### Scenario: awk is not available
 - **WHEN** `awk` is not available to the check
@@ -302,6 +307,16 @@ its first `=`.
   begins with `STORAGE_` and contains a character other than a letter, a digit
   or `_`
 - **THEN** no storage CLI invocation has that variable in its environment
+
+### Requirement: An environment that cannot be listed stops the run
+The check MUST exit non-zero, before starting any node and before creating its
+scratch directory, when the `env` it lists its environment with exits non-zero,
+whatever that `env` printed.
+
+#### Scenario: env fails
+- **WHEN** the `env` available to the check exits non-zero
+- **THEN** the check exits non-zero, the storage CLI is never invoked, and no
+  scratch directory is created
 
 ### Requirement: Requests stay on the local machine
 The check MUST address every HTTP request it makes to `127.0.0.1`, at the REST
