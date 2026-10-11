@@ -30,6 +30,8 @@ PAYLOAD_LINES=10000
 
 # Every port of a run, in one place: distinct, and none of the reserved 8080
 # (the CLI's REST default), 8090 and 8500 (the Basecamp storage module).
+# They are fixed, so two runs at once on one machine collide, and so does any
+# other test that later picks a port from 28481 to 28486.
 PUBLISHER_API_PORT=28481
 PUBLISHER_LISTEN_PORT=28482
 FETCHER_API_PORT=28483
@@ -39,6 +41,7 @@ REPRODUCER_LISTEN_PORT=28486
 
 # Bounds, in seconds.
 START_TIMEOUT=30
+PROBE_TIMEOUT=2
 REQUEST_TIMEOUT=30
 FETCH_TIMEOUT=60
 STOP_TIMEOUT=10
@@ -62,15 +65,23 @@ fail() {
 
 # --- processes ---------------------------------------------------------------
 
-# stop_node PID: ends one node and reaps it, with SIGKILL after STOP_TIMEOUT.
-# A watchdog bounds the wait because a reaped-or-not child cannot be polled
-# portably: kill -0 succeeds on a zombie.
-stop_node() {
+# forget_node PID: takes one pid off the list cleanup walks. A node that was
+# stopped and reaped must leave the list: cleanup would otherwise signal its
+# pid again, and the kernel may have given that number to an unrelated process
+# since.
+forget_node() {
 	remaining_pids=
 	for known_pid in $node_pids; do
 		[ "$known_pid" = "$1" ] || remaining_pids="$remaining_pids $known_pid"
 	done
 	node_pids=$remaining_pids
+}
+
+# stop_node PID: ends one node and reaps it, with SIGKILL after STOP_TIMEOUT.
+# A watchdog bounds the wait because a reaped-or-not child cannot be polled
+# portably: kill -0 succeeds on a zombie.
+stop_node() {
+	forget_node "$1"
 
 	kill "$1" 2>/dev/null
 	(
@@ -87,6 +98,10 @@ stop_node() {
 	return 0
 }
 
+# cleanup: the EXIT trap. It ignores INT and TERM while it runs, on purpose: a
+# second Ctrl-C must not cut the stopping short and leave a node running. The
+# wait this costs is bounded by STOP_TIMEOUT for each node. It then exits with
+# the status the run ended with, which the calls below would otherwise replace.
 cleanup() {
 	exit_status=$?
 	trap '' INT TERM
@@ -136,49 +151,73 @@ rest_ok() {
 
 # --- nodes -------------------------------------------------------------------
 
-# start_node NAME API_PORT LISTEN_PORT BOOTSTRAP_OPTION: starts one node
-# confined to localhost, with an empty data directory, and waits until it
-# accepts REST requests.
-start_node() {
-	node_name=$1
-	node_api_port=$2
-	node_dir=$scratch/$node_name
-	node_step="$node_name start"
-
-	if ! mkdir "$node_dir" || ! mkdir -m 700 "$node_dir/data"; then
-		fail "$node_step" "cannot create $node_dir/data"
+# require_silent_port NAME API_PORT: fails unless nothing answers an HTTP
+# request on the REST port the NAME node is about to be given. Without it, a
+# foreign server already on that port would answer the readiness poll for a
+# node that died binding the port, and the run would carry on against it.
+require_silent_port() {
+	if rest "$scratch/rest-discard" "$PROBE_TIMEOUT" "http://127.0.0.1:$2/"; then
+		fail "$1 start" "something already answers on 127.0.0.1:$2, so the $1 node cannot use it"
 	fi
+}
 
-	# Guard: without it, a foreign server already on the API port would answer
-	# the readiness poll for a node that died binding the port.
-	if rest "$scratch/rest-discard" 2 "http://127.0.0.1:$node_api_port/"; then
-		fail "$node_step" "something already answers on 127.0.0.1:$node_api_port, so the $node_name node cannot use it"
+# launch_node NAME API_PORT LISTEN_PORT BOOTSTRAP_OPTION: starts one node
+# confined to localhost on a new, empty data directory, and sets
+# last_started_pid. It does not wait for the node.
+launch_node() {
+	launch_name=$1
+	launch_api_port=$2
+	launch_listen_port=$3
+	launch_bootstrap_option=$4
+	launch_dir=$scratch/$launch_name
+
+	if ! mkdir "$launch_dir" || ! mkdir -m 700 "$launch_dir/data"; then
+		fail "$launch_name start" "cannot create $launch_dir/data"
 	fi
 
 	"$storage_cli" \
-		--data-dir="$node_dir/data" \
-		--api-port="$node_api_port" \
-		--listen-port="$3" \
+		--data-dir="$launch_dir/data" \
+		--api-port="$launch_api_port" \
+		--listen-port="$launch_listen_port" \
 		--listen-ip=127.0.0.1 \
 		--nat=extip:127.0.0.1 \
-		"$4" \
-		>"$node_dir/node.log" 2>&1 &
-	started_pid=$!
-	node_pids="$node_pids $started_pid"
+		"$launch_bootstrap_option" \
+		>"$launch_dir/node.log" 2>&1 &
+	last_started_pid=$!
+	node_pids="$node_pids $last_started_pid"
+}
+
+# wait_until_ready NAME PID API_PORT: returns once the node answers a REST
+# request, and fails when it exits first or the bounded wait ends. The answer,
+# the node's signed peer record, is left in the node's directory as "spr".
+wait_until_ready() {
+	ready_name=$1
+	ready_pid=$2
+	ready_api_port=$3
+	ready_dir=$scratch/$ready_name
 
 	waited=0
 	while [ "$waited" -lt "$START_TIMEOUT" ]; do
-		kill -0 "$started_pid" 2>/dev/null ||
-			fail "$node_step" "the $node_name node exited before accepting REST requests; see $node_dir/node.log"
-		if rest "$node_dir/spr" 2 --header 'Accept: text/plain' \
-			"http://127.0.0.1:$node_api_port/api/storage/v1/spr" &&
+		kill -0 "$ready_pid" 2>/dev/null ||
+			fail "$ready_name start" "the $ready_name node exited before accepting REST requests; see $ready_dir/node.log"
+		if rest "$ready_dir/spr" "$PROBE_TIMEOUT" --header 'Accept: text/plain' \
+			"http://127.0.0.1:$ready_api_port/api/storage/v1/spr" &&
 			[ "$rest_status" = 200 ]; then
 			return 0
 		fi
 		sleep 1
 		waited=$((waited + 1))
 	done
-	fail "$node_step" "the $node_name node was not ready after $START_TIMEOUT seconds; see $node_dir/node.log"
+	fail "$ready_name start" "the $ready_name node was not ready after $START_TIMEOUT seconds; see $ready_dir/node.log"
+}
+
+# start_node NAME API_PORT LISTEN_PORT BOOTSTRAP_OPTION: one node, from a
+# silent port to a ready REST API. It sets last_started_pid, which holds until
+# the next start_node: a caller that needs the pid copies it at once.
+start_node() {
+	require_silent_port "$1" "$2"
+	launch_node "$1" "$2" "$3" "$4"
+	wait_until_ready "$1" "$last_started_pid" "$2"
 }
 
 # --- steps -------------------------------------------------------------------
@@ -287,21 +326,29 @@ upload() {
 	esac
 }
 
+# read_publisher_spr: sets publisher_spr to the peer record the readiness poll
+# left behind. The record becomes the fetcher's only bootstrap node, so
+# anything that is not "spr:" and a base64url body is refused here, where the
+# failure names the publisher. Let through, an error page or a truncated
+# record would start a fetcher that finds no provider, and the run would fail
+# a fetch timeout later, blamed on the fetch.
 read_publisher_spr() {
 	publisher_spr=$(cat "$scratch/publisher/spr" 2>/dev/null)
-	case $publisher_spr in
-	spr:*[!A-Za-z0-9_=-]*) publisher_spr= ;;
-	spr:?*) ;;
-	*) publisher_spr= ;;
-	esac
-	[ -n "$publisher_spr" ] ||
+	spr_body=${publisher_spr#spr:}
+	# The first pattern is the record itself: equal means there was no prefix.
+	case $spr_body in
+	"$publisher_spr" | '' | *[!A-Za-z0-9_=-]*)
 		fail "publisher start" "the publisher returned no usable peer record; see $scratch/publisher/spr"
+		;;
+	esac
 }
 
+# check_manifest CID: fails unless the publisher's manifest for CID reports
+# the three pinned values.
 check_manifest() {
 	manifest=$scratch/manifest.json
 	rest_ok manifest "$manifest" "$REQUEST_TIMEOUT" \
-		"http://127.0.0.1:$PUBLISHER_API_PORT/api/storage/v1/data/$cid/network/manifest"
+		"http://127.0.0.1:$PUBLISHER_API_PORT/api/storage/v1/data/$1/network/manifest"
 	reported_block_size=$(sed -n \
 		's/.*"blockSize"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$manifest")
 	reported_filename=$(sed -n \
@@ -318,34 +365,38 @@ check_manifest() {
 		fail manifest "expected mimetype $PINNED_MIMETYPE, the manifest reports ${reported_mimetype:-none}"
 }
 
+# fetch CID OUT_FILE: streams CID from the fetcher into OUT_FILE.
 fetch() {
-	fetched=$scratch/fetched.bin
-	rest_ok fetch "$fetched" "$FETCH_TIMEOUT" \
-		"http://127.0.0.1:$FETCHER_API_PORT/api/storage/v1/data/$cid/network/stream?advertise=false"
+	rest_ok fetch "$2" "$FETCH_TIMEOUT" \
+		"http://127.0.0.1:$FETCHER_API_PORT/api/storage/v1/data/$1/network/stream?advertise=false"
 }
 
+# verify_fetched FETCHED_FILE ORIGINAL_FILE EXPECTED_SHA256
 verify_fetched() {
-	sha256_of "$fetched" ||
+	sha256_of "$1" ||
 		fail verification "cannot compute the sha256 of the fetched content"
-	[ "$sha256" = "$payload_sha256" ] ||
-		fail verification "sha256 mismatch: expected $payload_sha256, actual $sha256"
-	cmp -s "$payload" "$fetched" ||
+	[ "$sha256" = "$3" ] ||
+		fail verification "sha256 mismatch: expected $3, actual $sha256"
+	cmp -s "$2" "$1" ||
 		fail verification "the fetched content is not byte-for-byte the test content"
 }
 
+# check_cid_reproduces CID: the pinned upload to the reproducer returns CID.
 check_cid_reproduces() {
 	upload re-upload "$REPRODUCER_API_PORT" "$PINNED_FILENAME" "$PINNED_BLOCK_SIZE"
-	[ "$uploaded_cid" = "$cid" ] ||
-		fail re-upload "the CID does not reproduce: recorded $cid, re-upload returned $uploaded_cid"
+	[ "$uploaded_cid" = "$1" ] ||
+		fail re-upload "the CID does not reproduce: recorded $1, re-upload returned $uploaded_cid"
 }
 
+# check_cid_changes CID: an upload with one pinned value changed does not
+# return CID.
 check_cid_changes() {
 	upload "changed filename upload" "$REPRODUCER_API_PORT" "$CHANGED_FILENAME" "$PINNED_BLOCK_SIZE"
-	[ "$uploaded_cid" != "$cid" ] ||
-		fail "changed filename upload" "changing the filename to $CHANGED_FILENAME still returned the recorded CID $cid"
+	[ "$uploaded_cid" != "$1" ] ||
+		fail "changed filename upload" "changing the filename to $CHANGED_FILENAME still returned the recorded CID $1"
 	upload "changed block size upload" "$REPRODUCER_API_PORT" "$PINNED_FILENAME" "$CHANGED_BLOCK_SIZE"
-	[ "$uploaded_cid" != "$cid" ] ||
-		fail "changed block size upload" "changing the block size to $CHANGED_BLOCK_SIZE still returned the recorded CID $cid"
+	[ "$uploaded_cid" != "$1" ] ||
+		fail "changed block size upload" "changing the block size to $CHANGED_BLOCK_SIZE still returned the recorded CID $1"
 }
 
 main() {
@@ -365,19 +416,20 @@ main() {
 	upload upload "$PUBLISHER_API_PORT" "$PINNED_FILENAME" "$PINNED_BLOCK_SIZE"
 	cid=$uploaded_cid
 	note "recorded CID $cid"
-	check_manifest
+	check_manifest "$cid"
 
 	start_node fetcher "$FETCHER_API_PORT" "$FETCHER_LISTEN_PORT" "--bootstrap-node=$publisher_spr"
-	fetcher_pid=$started_pid
-	fetch
+	fetcher_pid=$last_started_pid
+	fetched=$scratch/fetched.bin
+	fetch "$cid" "$fetched"
 	stop_node "$fetcher_pid"
-	verify_fetched
+	verify_fetched "$fetched" "$payload" "$payload_sha256"
 
 	# The reproducer has no bootstrap node, so it cannot have obtained the
 	# content from the publisher: an equal CID comes from the bytes alone.
 	start_node reproducer "$REPRODUCER_API_PORT" "$REPRODUCER_LISTEN_PORT" --no-bootstrap-node
-	check_cid_reproduces
-	check_cid_changes
+	check_cid_reproduces "$cid"
+	check_cid_changes "$cid"
 
 	printf 'cid=%s\nfilename=%s\nblock_size=%s\nmimetype=%s\nsha256=%s\n' \
 		"$cid" "$PINNED_FILENAME" "$PINNED_BLOCK_SIZE" "$PINNED_MIMETYPE" "$payload_sha256"
