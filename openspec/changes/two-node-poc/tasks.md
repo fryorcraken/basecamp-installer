@@ -2,7 +2,7 @@
 
 - [x] spec — `spec-writer`
 - [x] design + code — `dev-writer`
-- [ ] tests — `tester`
+- [x] tests — `tester`
 - [ ] review: correctness — `code-reviewer`
 - [ ] review: security — `code-reviewer`
 - [ ] review: readability — `code-reviewer`
