@@ -3,7 +3,7 @@
 Dimension: security only. No mutation tool exists for POSIX shell (overlay),
 so I read every path for a skippable check and mutated three guards by hand.
 
-- [ ] **`spec-writer`** — `tests/integration/storage-round-trip.sh:158-165`, spec
+- [x] **`spec-writer`** — `tests/integration/storage-round-trip.sh:158-165`, spec
       "Nodes are confined to localhost" — the node's ambient `STORAGE_*`
       environment can undo the confinement and the spec never says to prevent it.
       **Scenario:** the CLI loads its options with `envVarsPrefix = "storage"`
@@ -25,6 +25,18 @@ so I read every path for a skippable check and mutated three guards by hand.
       **Severity:** low to medium; the caller must set the variable themselves, so
       this is hardening, not an exploit. Read from source; not run against a real
       node.
+      **Outcome (`spec-writer`): fixed in the spec, both halves.** Confirmed
+      against `logos-storage-nim/storage.nim:41,50,56-57` and
+      `storage/conf.nim:83,258`. (1) New requirement "A node's REST API is
+      bound to localhost" requires `--api-bindaddr=127.0.0.1` on every node,
+      scenario "REST API bind address". (2) New requirement "A node takes no
+      setting from the caller's environment": no variable whose name begins
+      with `STORAGE_` is in any node's environment, and no `--config-file` is
+      given, with scenarios "Caller's environment carries storage variables"
+      and "No configuration file". The ambient environment was not put out of scope: one
+      rule covers the bind address, metrics, mix and `STORAGE_CONFIG_FILE`
+      alike, and a recording stub can observe it. The code does neither yet;
+      that is the `dev-writer` entry below.
 
 - [ ] **`dev-writer`** — `tests/integration/storage-round-trip.sh:158-165` —
       same defect, code side: the check inherits the caller's environment into

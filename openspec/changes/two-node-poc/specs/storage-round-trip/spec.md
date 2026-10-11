@@ -23,6 +23,14 @@ metrics port only when the metrics server is enabled; it has no separate
 discovery port and no `--disc-port` option. An earlier CLI, whose node also
 opens a UDP discovery port, is outside this capability.
 
+That CLI also takes the value of any of its options from an environment
+variable whose name begins with `STORAGE_`, and from a configuration file named
+with `--config-file`.
+
+A wait or a time is **bounded** when its limit is fixed in the check and it
+ends without any outside action. The number of seconds of a bound is not part
+of this contract.
+
 The **reserved ports** are TCP 8080, which that CLI gives the REST API when
 none is stated, and TCP 8500 and UDP 8090, which the Basecamp storage module
 uses by default.
@@ -34,6 +42,9 @@ Also outside this capability:
   another mimetype to show the CID changes.
 - **Ports chosen by the caller, and a search for free ports.** The ports of a
   run are the check's own.
+- **The check's result while another process holds a reserved port.** The
+  check states ports that are not reserved; no run with a reserved port held is
+  part of this contract.
 - **Two runs at the same time on one machine.**
 - **A server that starts answering on a node's REST port after the check has
   found that port silent** and before the node binds it.
@@ -105,6 +116,16 @@ operand.
 - **WHEN** the check is run with `--` followed by a path that begins with `-`
 - **THEN** that path is taken as the storage CLI, not as an option
 
+### Requirement: A repeated option takes its last value
+When `--scratch-parent` is given more than once, the check MUST use the value
+of the last one and MUST NOT treat the repeat as an error.
+
+#### Scenario: Option given twice
+- **WHEN** the check is run with `--scratch-parent` twice, naming two different
+  directories
+- **THEN** the scratch directory it prints is a direct child of the second
+  directory, and the run adds no entry to the first
+
 ### Requirement: The storage CLI is supplied by the caller
 The check MUST drive the Logos Storage CLI executable its caller names, and
 MUST NOT search for, download or build one itself. It MUST exit non-zero,
@@ -165,6 +186,29 @@ an address off the local machine.
 - **WHEN** the check starts a node
 - **THEN** the storage CLI invocation carries no `--network`
 
+### Requirement: A node's REST API is bound to localhost
+The check MUST start every node with its REST API bound to `127.0.0.1`, stated
+in the invocation as `--api-bindaddr=127.0.0.1`.
+
+#### Scenario: REST API bind address
+- **WHEN** the check starts a node
+- **THEN** the storage CLI invocation carries `--api-bindaddr=127.0.0.1`
+
+### Requirement: A node takes no setting from the caller's environment
+The check MUST start every node with an environment that holds no variable
+whose name begins with `STORAGE_`, whatever the check's own environment holds.
+It MUST NOT give any node a configuration file (`--config-file`).
+
+#### Scenario: No configuration file
+- **WHEN** the check starts a node
+- **THEN** the storage CLI invocation carries no `--config-file`
+
+#### Scenario: Caller's environment carries storage variables
+- **WHEN** the check is run with `STORAGE_API_BINDADDR=0.0.0.0` and
+  `STORAGE_METRICS=true` in its environment
+- **THEN** the environment of every storage CLI invocation holds no variable
+  whose name begins with `STORAGE_`
+
 ### Requirement: Requests stay on the local machine
 The check MUST address every HTTP request it makes to `127.0.0.1`, at the REST
 API port of a node of the same run. So that neither a `curl` configuration
@@ -181,6 +225,14 @@ the check MUST invoke `curl` with `-q` as its first argument and with
 - **WHEN** the check makes an HTTP request
 - **THEN** `curl` is invoked with `-q` as its first argument and with
   `--noproxy` given `*`
+
+### Requirement: Every request carries a time limit
+The check MUST invoke `curl`, for every HTTP request it makes, with
+`--max-time` given a number of seconds greater than zero.
+
+#### Scenario: Request time limit
+- **WHEN** the check makes an HTTP request
+- **THEN** `curl` is invoked with `--max-time` given a number greater than zero
 
 ### Requirement: Ports are chosen explicitly
 The check MUST state, in every node's invocation, both ports that node listens
@@ -201,11 +253,6 @@ metrics server, and MUST NOT pass `--disc-port`.
 - **THEN** the storage CLI invocation carries neither `--disc-port` nor
   `--metrics`
 
-#### Scenario: Reserved ports are occupied
-- **WHEN** another process holds TCP 8080, TCP 8500 and UDP 8090 while the
-  check runs against a working storage CLI
-- **THEN** the check's result is unaffected by it
-
 ### Requirement: The ports of a run are the check's own
 The check MUST NOT take a port from its caller or from its environment, and
 MUST use the same ports on every run.
@@ -218,7 +265,8 @@ MUST use the same ports on every run.
 ### Requirement: A REST port that already answers is refused
 Before starting a node, the check MUST ask whether anything already answers an
 HTTP request on `127.0.0.1` at the REST API port that node is to be given. When
-something does, the check MUST exit non-zero without starting that node.
+something does, whatever the HTTP status of its answer, the check MUST exit
+non-zero without starting that node.
 
 #### Scenario: Foreign server on the publisher's REST port
 - **WHEN** a server that the check did not start answers HTTP requests on the
@@ -245,8 +293,8 @@ is not ready when the wait ends.
 #### Scenario: Node never becomes ready
 - **WHEN** the storage CLI keeps running but its node never accepts REST
   requests
-- **THEN** the check stops waiting after a bounded time, exits non-zero, and
-  its diagnostic names the node that did not become ready
+- **THEN** the check stops waiting without being signalled, exits non-zero,
+  and its diagnostic names the node that did not become ready
 
 ### Requirement: Content is published under the pinned values
 The check MUST upload its test content to the publisher with the filename
@@ -331,8 +379,8 @@ from the publisher, with `advertise=false`.
 #### Scenario: Publisher is gone
 - **WHEN** the publisher is no longer running when the fetcher asks for the
   content
-- **THEN** the check exits non-zero after a bounded time rather than waiting
-  indefinitely
+- **THEN** the check exits non-zero without being signalled, no later than the
+  fetch request's time limit allows
 
 ### Requirement: Fetched content is verified against the original
 The check MUST compute the sha256 of its test content before uploading it. It
@@ -502,6 +550,21 @@ one.
 - **WHEN** the check is run without `--scratch-parent` and `TMPDIR` names a
   directory
 - **THEN** the scratch directory it prints is a direct child of that directory
+
+#### Scenario: Option beats the environment
+- **WHEN** the check is run with `--scratch-parent DIR` and `TMPDIR` names
+  another directory
+- **THEN** the scratch directory it prints is a direct child of `DIR`, and the
+  run adds no entry to the directory `TMPDIR` names
+
+#### Scenario: TMPDIR is not set
+- **WHEN** the check is run without `--scratch-parent` and `TMPDIR` is not set
+- **THEN** the directory it asks `mktemp` to create is directly under `/tmp`
+
+#### Scenario: TMPDIR is empty
+- **WHEN** the check is run without `--scratch-parent` and `TMPDIR` is set to
+  the empty string
+- **THEN** the directory it asks `mktemp` to create is directly under `/tmp`
 
 #### Scenario: Scratch parent is not a directory
 - **WHEN** the check is run with a scratch parent that does not exist or is

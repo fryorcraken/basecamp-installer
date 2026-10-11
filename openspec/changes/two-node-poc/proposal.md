@@ -26,6 +26,8 @@ anything is built on top of it.
 - The check's command line, the tools it needs beyond POSIX, where its scratch
   directory is made and that it is kept, and its refusal of a REST port that
   already answers are part of the contract.
+- Each node's REST API is bound to localhost explicitly, and no node reads a
+  `STORAGE_` variable from the caller's environment.
 - Every failure exits non-zero and names the step that failed; success is
   reported only when every verification ran and passed.
 - The first runnable integration layer for this project comes into existence.

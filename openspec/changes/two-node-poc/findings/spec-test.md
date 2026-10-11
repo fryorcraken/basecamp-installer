@@ -117,7 +117,7 @@ restored (`git status --short` is empty). Output read from `sh tests/run.sh`:
       `--scratch-parent` stated twice with the later one winning (below).
       Severity low.
 
-- [ ] **`spec-writer`** — requirement "The command line is one operand and one
+- [x] **`spec-writer`** — requirement "The command line is one operand and one
       option": the form is `[--scratch-parent DIR] [--] STORAGE_CLI`, and the
       spec is silent on a repeated `--scratch-parent`.
       **Scenario:** `run_check` always passes `--scratch-parent "$work/scratch"`
@@ -127,8 +127,14 @@ restored (`git status --short` is empty). Output read from `sh tests/run.sh`:
       those tests with no scenario saying which behaviour is right. State the
       rule (later wins, or repeat is an error) and the tests can drop the
       workaround. Severity low.
+      **Outcome (`spec-writer`): fixed.** The last value wins and a repeat is
+      not an error: new requirement "A repeated option takes its last value",
+      with scenario "Option given twice". This is what the check
+      does today, so no code change follows; the tests' second
+      `--scratch-parent` is now specified behaviour, not a workaround, and
+      needs no `NO SPEC:` marker.
 
-- [ ] **`spec-writer`** — scenario "Reserved ports are occupied", requirement
+- [x] **`spec-writer`** — scenario "Reserved ports are occupied", requirement
       "Ports are chosen explicitly".
       **Scenario:** as written the scenario ("another process holds TCP 8080,
       TCP 8500 and UDP 8090 while the check runs against a working storage CLI")
@@ -137,8 +143,15 @@ restored (`git status --short` is empty). Output read from `sh tests/run.sh`:
       testable only in the integration layer against a real node. Say so in the
       scenario, or restate it as the checkable consequence. Spec defect, not a
       coverage gap. Severity low.
+      **Outcome (`spec-writer`): fixed by removing the scenario.** Its
+      checkable consequence was already stated twice: scenario "Ports passed to
+      each node" (no stated port is 8080, 8090 or 8500) and scenario "Request
+      target" (every request goes to a port the check gave a node). Nothing
+      automated runs the check against a real node with those ports held, so
+      the Purpose now lists "the check's result while another process holds a
+      reserved port" as outside the capability.
 
-- [ ] **`spec-writer`** — requirement "Nodes start within a bounded wait" and
+- [x] **`spec-writer`** — requirement "Nodes start within a bounded wait" and
       scenario "Publisher is gone": "after a bounded time".
       **Scenario:** the unit suite cannot observe elapsed time for a stub that
       answers at once, so "bounded" is pinned only by the stub curl seeing a
@@ -147,6 +160,16 @@ restored (`git status --short` is empty). Output read from `sh tests/run.sh`:
       "positive". If the spec wants a number, give it; if not, say
       "a time limit is set" so the test is exactly the requirement. Severity
       low.
+      **Outcome (`spec-writer`): fixed; the spec gives no number.** The Purpose
+      now defines "bounded" (a limit fixed in the check, ending without outside
+      action) and says the number of seconds is not part of the contract. New
+      requirement "Every request carries a time limit" (`--max-time` greater
+      than zero on every `curl`), scenario "Request time limit", is exactly
+      what the test asserts, so the tester's "positive `--max-time`" marker in
+      the entry above is no longer a `NO SPEC:` choice. Scenarios "Node never
+      becomes ready" and "Publisher is gone" now say the check exits non-zero
+      without being signalled, the second "no later than the fetch request's
+      time limit allows".
 
 ## Clean
 
