@@ -163,9 +163,13 @@ The names come from `env`, whose output cannot tell a variable from a line
 inside another variable's multi-line value, and `unset` cannot remove a name
 that is not a shell identifier. Both cases leave a `STORAGE_` line in a second
 `env` listing, and the check then exits non-zero at the step `environment`
-rather than start a node it cannot vouch for. The spec does not state this
-case; the test is marked `NO SPEC:`. A variable whose name contains a newline
-is not handled and not claimed.
+rather than start a node it cannot vouch for. The spec requires this for the
+line inside another variable's value (requirement "A storage variable that
+cannot be removed stops the run"). For a name that is not a shell identifier
+it requires only that no node is given the variable, and leaves open whether
+the run is refused, because some shells drop such a variable before the check
+sees it; where the shell keeps it, this check refuses. A variable whose name
+contains a newline is outside the spec, not handled and not claimed.
 
 The environment half was read from source and pinned at the unit layer, where
 the stub node records the `STORAGE_` variables it was started with. No real
@@ -365,12 +369,12 @@ row that says no test turns red is a gap, and says whose.
 
 | Guard | Without it |
 |---|---|
-| The probe that nothing answers on a node's REST port before the node starts (`require_silent_port`, called for every node) | A foreign server on that port answers the readiness poll for a node that died binding it, and the check carries on against a stranger. Watched red: "a foreign server on the publisher's REST port is refused" and "a foreign server on the fetcher's REST port is refused". No test covers the reproducer's port. |
+| The probe that nothing answers on a node's REST port before the node starts (`require_silent_port`, called for every node) | A foreign server on that port answers the readiness poll for a node that died binding it, and the check carries on against a stranger. Watched red: "a foreign server on the publisher's REST port is refused" and "a foreign server on the fetcher's REST port is refused". Watched red with the probe skipped for the reproducer alone: "a foreign server on the reproducer's REST port is refused", and nothing else. |
 | The mimetype comparison in `check_manifest` | A manifest carrying a mimetype the HTTP client chose passes, and the printed CID is one a second publisher cannot reproduce. Watched red: "manifest reports another mimetype" and "manifest reports no mimetype". |
 | The scratch parent's absolute form goes to its own variable | The failed `cd` empties the variable the diagnostic prints, so a scratch parent that is not a directory is refused without being named. Watched red: "a scratch parent that does not exist is refused and named" and "a scratch parent that is a file is refused and named". |
 | A relative scratch parent is prefixed with `./` before `cd` | `cd -- -` means "the previous directory", so a directory named `-` is not entered. Watched red: "a scratch parent named - is a directory like any other". |
 | An empty scratch parent is refused before `cd` | `cd ''` is the current directory in shells that accept it, so the scratch directory would land in the caller's working directory. **Not watched red:** with the refusal removed, "an empty scratch parent is refused" still passed, because bash's `cd ''` fails by itself. The guard is for shells where it does not; no such shell was run with the guard removed. |
-| The CID must be letters and digits only | The CID goes into two URLs and the result lines: a multi-line answer could forge a result line, and one with `/` could change the path requested. **No test turns red** with the character class removed: "upload returns no CID" pins only the empty case, and the stub returns only well-formed CIDs. An open entry for the `tester`. |
+| The CID must be letters and digits only | The CID goes into two URLs and the result lines: a multi-line answer could forge a result line, and one with `/` could change the path requested. Watched red with the character class removed and the empty case kept: the five tests "a publisher upload answer … is not a CID" (a slash, a second line, a space, a dot, a hyphen) and "a reproducer upload answer that is not a CID is refused", and nothing else. The reproducer test malforms the third upload there, not the first: a malformed first answer is also not the recorded CID, so the run fails at the re-upload step with or without this guard. |
 | A CLI name with no slash is prefixed with `./` | The shell looks the name up on `PATH`, which is the search the spec forbids. Watched red: "a bare name runs the file in the current directory" and "an operand after the option terminator is the storage CLI". |
 | `--listen-ip=127.0.0.1` | The node's peer-to-peer listener binds every interface (the CLI's default), so a machine on the same network could reach a node the spec confines to localhost. Watched red: "nodes are confined to localhost", which sees the option on each invocation. No test sees the address a real node binds. |
 | `--api-bindaddr=127.0.0.1` | The REST bind address is left to the CLI's lowest-priority default. Watched red, before the option was added: "every node's REST API is bound to localhost and takes no configuration file". |
@@ -380,7 +384,7 @@ row that says no test turns red is a gap, and says whose.
 | `-q` first and `--noproxy '*'` on every `curl` | A user's `~/.curlrc` or a proxy variable sends a localhost request to another machine. Watched red: "every request is made with -q first and --noproxy given *". The stub records the arguments; no test sees a real `curl` honour them. |
 | The `SIGKILL` watchdog in `stop_node` | The check waits for as long as a node ignores `SIGTERM`. Watched red: "a node that ignores SIGTERM is still stopped" (the check took the stub's full 90 seconds). |
 | A node is forgotten only after `wait` returns | See "Process handling". Watched red, before the fix: "SIGTERM during the stop of a node still leaves no node behind". |
-| `cmp` after the sha256 comparison | **No test turns red** with it removed: every test whose content differs fails the sha256 comparison first. It is the spec's second comparison. A sha256 shim that prints one constant digest would separate the two; that is an open entry for the `tester`. |
+| `cmp` after the sha256 comparison | It is the spec's second comparison, and the only one left when the two digests agree: with a sha256 tool that answers the same for every input, a download that differs from the test content passes. Watched red with the `cmp` call removed: "equal digests do not hide a fetched content that differs", and nothing else. That test runs the check with a sha256 tool that prints one constant digest, because every other test whose content differs fails the sha256 comparison first. |
 
 ### A repeated `--scratch-parent` takes its last value
 
