@@ -34,6 +34,9 @@ printf '%s\n' "$role" >"$state/role-$api_port"
 printf '%s\n' "$$" >>"$state/pids"
 printf '%s\n' "$$" >"$state/pid-$role"
 ls -A "$data_dir" >"$state/data-dir-at-start-$role" 2>&1
+# Every STORAGE_ variable this process was started with, one per line; an
+# empty file when there is none.
+env | grep '^STORAGE_' >"$state/environment-$role"
 
 echo "stub storage node: $role on REST port $api_port"
 

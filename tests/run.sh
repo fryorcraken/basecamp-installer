@@ -85,7 +85,7 @@ run_check_bare() {
 make_toolbox() {
 	mkdir "$1"
 	for tool in "${shell_under_test%% *}" awk sed cmp wc mktemp cat mkdir sleep \
-		cksum tr cp grep ls rm sha256sum; do
+		cksum tr cp grep ls rm env sha256sum; do
 		ln -s "$(command -v "$tool")" "$1/$tool"
 	done
 	ln -s "$stubs/curl" "$1/curl"

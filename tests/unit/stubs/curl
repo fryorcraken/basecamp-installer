@@ -18,6 +18,8 @@
 #                           port no stub node listens on
 #   foreign-after-publisher the same, but only once the publisher listens, so
 #                           the publisher's own start is not refused
+#   spr-body-ROLE           holds the body this node answers /spr with, in
+#                           place of a well-formed peer record
 #   upload-status-ROLE      holds the HTTP status an upload is refused with
 #   upload-empty-ROLE       an upload answers 200 with an empty body
 #   cid-salt-ROLE           this node's CIDs differ from every other node's
@@ -120,7 +122,11 @@ fi
 
 case $path in
 /api/storage/v1/spr)
-	printf 'spr:STUB-%s' "$role" >"$out"
+	if [ -f "$state/spr-body-$role" ]; then
+		cat "$state/spr-body-$role" >"$out"
+	else
+		printf 'spr:STUB-%s' "$role" >"$out"
+	fi
 	reply 200
 	;;
 /api/storage/v1/data)

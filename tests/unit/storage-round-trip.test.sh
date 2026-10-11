@@ -210,6 +210,49 @@ grep -v ' http://127\.0\.0\.1:' "$state/requests" >"$work/off-host-requests"
 assert_line_count "$work/off-host-requests" 0
 end
 
+# Requirement "A node's REST API is bound to localhost", and scenario "No
+# configuration file".
+begin "every node's REST API is bound to localhost and takes no configuration file"
+run_check "$stub_cli"
+assert_status_zero
+assert_line_count "$state/invocations" 3
+while read -r invocation; do
+	printf '%s\n' "$invocation" | tr ' ' '\n' >"$work/arg-lines"
+	grep -x -- '--api-bindaddr=127\.0\.0\.1' "$work/arg-lines" >/dev/null ||
+		flunk "an invocation lacks --api-bindaddr=127.0.0.1: $invocation"
+done <"$state/invocations"
+assert_lacks "$state/invocations" "--config-file"
+end
+
+# Scenario "Caller's environment carries storage variables". The stub node
+# records the STORAGE_ variables it was started with.
+begin "no node is given a STORAGE_ variable from the caller's environment"
+STORAGE_API_BINDADDR=0.0.0.0
+STORAGE_METRICS=true
+export STORAGE_API_BINDADDR STORAGE_METRICS
+run_check "$stub_cli"
+unset STORAGE_API_BINDADDR STORAGE_METRICS
+assert_status_zero
+for node in publisher fetcher reproducer; do
+	assert_empty_file "$state/environment-$node"
+done
+end
+
+# NO SPEC: the spec does not say what happens when a STORAGE_ variable cannot
+# be removed. The check reads names from env, which cannot tell a variable from
+# a line inside another variable's value, so this refuses to start any node.
+begin "a STORAGE_ line the check cannot remove from the environment stops the run"
+UNRELATED_SETTING='first line
+STORAGE_FORGED=1'
+export UNRELATED_SETTING
+run_check "$stub_cli"
+unset UNRELATED_SETTING
+assert_failed_at environment
+assert_contains "$work/stderr" "STORAGE_FORGED"
+assert_line_count "$state/invocations" 0
+assert_no_scratch_made
+end
+
 begin "ports are stated, distinct and not reserved"
 run_check "$stub_cli"
 assert_status_zero
@@ -368,6 +411,28 @@ check_path=$work/fast:$stubs:$PATH
 run_check "$stub_cli"
 assert_failed_at "publisher start"
 assert_contains "$work/stderr" "not ready"
+# The bound is a number of attempts, and the diagnostic says how many were
+# made: the count here is of the readiness requests the stub curl saw.
+attempts=$(grep -c '/api/storage/v1/spr' "$state/requests")
+[ "$attempts" -gt 1 ] || flunk "the check asked $attempts times before giving up"
+assert_contains "$work/stderr" "not ready after $attempts attempts"
+end
+
+# NO SPEC: the spec has no scenario for a peer record that is not one. The
+# check refuses it at the publisher, before any fetcher is started on it.
+begin "a publisher answer that is not a peer record is refused"
+knob spr-body-publisher '<html>not a peer record</html>'
+run_check "$stub_cli"
+assert_failed_at "publisher start"
+assert_contains "$work/stderr" "peer record"
+assert_line_count "$state/invocations" 1
+end
+
+begin "a peer record with no body is refused"
+knob spr-body-publisher 'spr:'
+run_check "$stub_cli"
+assert_failed_at "publisher start"
+assert_line_count "$state/invocations" 1
 end
 
 # --- A REST port that already answers is refused -----------------------------
@@ -623,11 +688,13 @@ assert_failed_at upload
 [ "$elapsed" -lt 45 ] || flunk "the check took $elapsed seconds to exit; the node ignores SIGTERM for 90"
 end
 
-# interrupt_check SIGNAL: starts the check against a node that never becomes
-# ready, sends it SIGNAL once the node is running, and sets status. The check is
-# started under env --default-signal because a shell started in the background
-# of a script ignores SIGINT and then cannot trap it.
+# interrupt_check SIGNAL [FILE]: starts the check, sends it SIGNAL once FILE
+# exists under the stub state (default: pids, which a started node writes),
+# and sets status. The check is started under env --default-signal because a
+# shell started in the background of a script ignores SIGINT and then cannot
+# trap it.
 interrupt_check() {
+	signal_after=$state/${2:-pids}
 	reset_signals=
 	env --default-signal=INT true 2>/dev/null && reset_signals="env --default-signal=INT"
 	# shellcheck disable=SC2086
@@ -636,11 +703,11 @@ interrupt_check() {
 		>"$work/stdout" 2>"$work/stderr" &
 	check_pid=$!
 	waited=0
-	while [ ! -f "$state/pids" ] && [ "$waited" -lt 20 ]; do
+	while [ ! -f "$signal_after" ] && [ "$waited" -lt 20 ]; do
 		sleep 1
 		waited=$((waited + 1))
 	done
-	[ -f "$state/pids" ] || flunk "the check started no node within 20 seconds"
+	[ -f "$signal_after" ] || flunk "$signal_after did not appear within 20 seconds"
 	kill -s "$1" "$check_pid"
 	wait "$check_pid"
 	status=$?
@@ -649,6 +716,25 @@ interrupt_check() {
 begin "SIGTERM stops the running node and exits non-zero"
 knob deaf-publisher
 interrupt_check TERM
+assert_status_nonzero
+assert_lacks "$work/stdout" "cid="
+end
+
+# Requirement "No node outlives the run", for a signal that arrives while the
+# check is already stopping a node. The fetcher ignores SIGTERM, so the check is
+# still waiting for it two seconds after the fetch was answered; the node must
+# be gone when the check has exited, not some seconds later.
+begin "SIGTERM during the stop of a node still leaves no node behind"
+knob ignore-term-fetcher
+(
+	while [ ! -f "$state/fetched-by" ]; do "$real_sleep" 1; done
+	"$real_sleep" 2
+	: >"$state/stop-in-progress"
+) &
+marker_pid=$!
+interrupt_check TERM stop-in-progress
+kill "$marker_pid" 2>/dev/null
+wait "$marker_pid" 2>/dev/null
 assert_status_nonzero
 assert_lacks "$work/stdout" "cid="
 end

@@ -39,8 +39,11 @@ FETCHER_LISTEN_PORT=28484
 REPRODUCER_API_PORT=28485
 REPRODUCER_LISTEN_PORT=28486
 
-# Bounds, in seconds.
-START_TIMEOUT=30
+# Bounds. A node's start is bounded by a number of readiness attempts, each
+# one request of at most PROBE_TIMEOUT seconds and a pause of POLL_INTERVAL;
+# the rest are seconds.
+START_ATTEMPTS=30
+POLL_INTERVAL=1
 PROBE_TIMEOUT=2
 REQUEST_TIMEOUT=30
 FETCH_TIMEOUT=60
@@ -51,6 +54,7 @@ scratch_parent=${TMPDIR:-/tmp}
 scratch=
 node_pids=
 request_pid=
+watchdog_pid=
 
 note() {
 	printf '%s: %s\n' "$PROGRAM" "$*" >&2
@@ -79,10 +83,10 @@ forget_node() {
 
 # stop_node PID: ends one node and reaps it, with SIGKILL after STOP_TIMEOUT.
 # A watchdog bounds the wait because a reaped-or-not child cannot be polled
-# portably: kill -0 succeeds on a zombie.
+# portably: kill -0 succeeds on a zombie. The node is forgotten only once the
+# wait has returned: a signal that interrupts the wait runs cleanup, which must
+# still find the node on the list and stop it.
 stop_node() {
-	forget_node "$1"
-
 	kill "$1" 2>/dev/null
 	(
 		trap 'kill "$sleep_pid" 2>/dev/null; exit 0' TERM
@@ -93,8 +97,10 @@ stop_node() {
 	) >/dev/null 2>&1 &
 	watchdog_pid=$!
 	wait "$1" 2>/dev/null
+	forget_node "$1"
 	kill "$watchdog_pid" 2>/dev/null
 	wait "$watchdog_pid" 2>/dev/null
+	watchdog_pid=
 	return 0
 }
 
@@ -107,6 +113,9 @@ cleanup() {
 	trap '' INT TERM
 	trap - EXIT
 	[ -n "$request_pid" ] && kill "$request_pid" 2>/dev/null
+	# A stop that a signal interrupted left its watchdog behind; the stop is
+	# done again below with a watchdog of its own.
+	[ -n "$watchdog_pid" ] && kill "$watchdog_pid" 2>/dev/null
 	for node_pid in $node_pids; do
 		stop_node "$node_pid"
 	done
@@ -180,6 +189,7 @@ launch_node() {
 		--api-port="$launch_api_port" \
 		--listen-port="$launch_listen_port" \
 		--listen-ip=127.0.0.1 \
+		--api-bindaddr=127.0.0.1 \
 		--nat=extip:127.0.0.1 \
 		"$launch_bootstrap_option" \
 		>"$launch_dir/node.log" 2>&1 &
@@ -196,8 +206,8 @@ wait_until_ready() {
 	ready_api_port=$3
 	ready_dir=$scratch/$ready_name
 
-	waited=0
-	while [ "$waited" -lt "$START_TIMEOUT" ]; do
+	attempts=0
+	while [ "$attempts" -lt "$START_ATTEMPTS" ]; do
 		kill -0 "$ready_pid" 2>/dev/null ||
 			fail "$ready_name start" "the $ready_name node exited before accepting REST requests; see $ready_dir/node.log"
 		if rest "$ready_dir/spr" "$PROBE_TIMEOUT" --header 'Accept: text/plain' \
@@ -205,10 +215,10 @@ wait_until_ready() {
 			[ "$rest_status" = 200 ]; then
 			return 0
 		fi
-		sleep 1
-		waited=$((waited + 1))
+		sleep "$POLL_INTERVAL"
+		attempts=$((attempts + 1))
 	done
-	fail "$ready_name start" "the $ready_name node was not ready after $START_TIMEOUT seconds; see $ready_dir/node.log"
+	fail "$ready_name start" "the $ready_name node was not ready after $attempts attempts, which is at most $((START_ATTEMPTS * (PROBE_TIMEOUT + POLL_INTERVAL))) seconds; see $ready_dir/node.log"
 }
 
 # start_node NAME API_PORT LISTEN_PORT BOOTSTRAP_OPTION: one node, from a
@@ -265,6 +275,23 @@ require_tools() {
 	for tool in curl awk sed cmp wc mktemp; do
 		command -v "$tool" >/dev/null 2>&1 || fail tools "$tool is not available"
 	done
+}
+
+# clear_storage_environment: removes every STORAGE_ variable from this shell,
+# so no node it starts inherits one. The storage CLI takes any of its options
+# from such a variable: STORAGE_API_BINDADDR=0.0.0.0 would otherwise serve
+# every node's REST API on all interfaces while the run still passed.
+# It is called once, before any node, so no launch can forget it.
+clear_storage_environment() {
+	for storage_variable in $(env | sed -n 's/^\(STORAGE_[A-Za-z0-9_]*\)=.*/\1/p'); do
+		unset "$storage_variable"
+	done
+	# Guard: unset cannot remove a name that is not a shell identifier, and
+	# env cannot tell a variable from a line inside another one's value. Both
+	# leave a STORAGE_ line here, and the run stops rather than guess.
+	storage_leftover=$(env | sed -n 's/^\(STORAGE_[^=]*\).*/\1/p')
+	[ -z "$storage_leftover" ] ||
+		fail environment "cannot remove from the nodes' environment: $storage_leftover"
 }
 
 create_scratch() {
@@ -403,6 +430,7 @@ main() {
 	parse_arguments "$@"
 	require_storage_cli
 	require_tools
+	clear_storage_environment
 
 	trap cleanup EXIT
 	trap 'exit 130' INT
